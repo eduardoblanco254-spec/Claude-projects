@@ -42,3 +42,14 @@ cual a otro juego. `demo.html` la usa en un prototipo con ritmo al estilo Patapo
 - Puedes sincronizar el agua con el ritmo: sube `viento` un instante en cada golpe de tambor bien dado,
   o haz `hz` igual al tempo (p. ej. 8 Hz a 120 ppm) para que las olas "bailen" con la música.
 - Rendimiento: unos 2–3 ms por frame en 480×270; no escala con el número de personajes.
+
+## Guerreros stickman (demo.html)
+
+- Esqueleto: cadera, torso (9 px, 2 px de grosor), cabeza r3 con un ojo, muslo/pierna 6+6, brazo/antebrazo 5+5.
+- Rodillas y codos por **cinemática inversa de 2 huesos** (ley de cosenos): solo se animan cadera, pies y
+  manos; las articulaciones se calculan solas. Todo se dibuja con líneas de Bresenham de 1 px.
+- **Marcha sin patinar**: un ciclo de piernas = un pulso de tambor (0.5 s). El pie apoyado retrocede
+  exactamente a la velocidad del suelo (zancada = velocidad × pulso / 2 = 7.5 px) y pisa en el golpe.
+- Ataque en 4 tiempos dentro del pulso: preparar, estocada rápida, sostener, volver. Las animaciones se
+  mezclan con pesos suaves para no dar saltos al cambiar de orden. Acertar un golpe hace saltar a la tropa.
+- `demo.html?shot=1&sim=2&orden=marchar` simula 2 s y deja la imagen en `#out` (para capturas).

@@ -38,8 +38,9 @@
   // ---- Estado
   let t = 0, camX = 0, noche = P.has('noche') ? 1 : 0, nocheObj = noche, viento = 0.5;
   const BEAT = 0.5;                          // un golpe de tambor cada medio segundo
+  let dtDibujo = 1 / 60;
   let combo = [], orden = null, ordenFin = 0, textos = [];
-  const tropa = [0, 1, 2, 3, 4, 5].map((i) => ({ i, x: 150 - i * 22, fase: hash(i, 3) * 6, porta: i === 0 ? 'bandera' : i === 3 ? 'antorcha' : 'lanza' }));
+  const tropa = [0, 1, 2, 3, 4, 5].map((i) => ({ i, x: 150 - i * 20, fase: hash(i, 3) * 6, porta: i === 0 ? 'bandera' : i === 3 ? 'antorcha' : 'lanza' }));
 
   // ---- Sonido (tambores sintetizados)
   let ac = null;
@@ -60,6 +61,7 @@
     const fase = (t % BEAT) / BEAT, cerca = fase < 0.25 || fase > 0.75;
     textos.push({ s: tipo === 'PATA' ? '¡PATA!' : '¡PON!', x: tipo === 'PATA' ? 170 : 290, y: 40, a: 0, ok: cerca });
     if (!cerca || orden) { combo = []; return; }
+    for (const g of tropa) g.salto = 0.22;
     combo.push(tipo); if (combo.length > 4) combo.shift();
     const k = combo.join(' ');
     if (k === 'PATA PATA PATA PON') { orden = 'marchar'; ordenFin = t + BEAT * 4; combo = []; }
@@ -112,29 +114,134 @@
     for (let x = 0; x < W; x++) { const i = Math.floor(x + camX); if (hash(i, 9) < 0.35) rect(x, GY - 1 - Math.floor(hash(i, 10) * 3 * (0.6 + 0.4 * Math.sin(t * 3 * viento + i * 0.3))), 1, 3, hierba); }
   }
 
-  // ---- Guerreros: bolita negra, ojo grande, patas de palo
-  const NEGRO = '#15131A';
-  function guerrero(g, px) {
-    const marcha = orden === 'marchar', ataque = orden === 'atacar';
-    const pulso = Math.max(0, 1 - ((t % BEAT) / BEAT) * 4);           // salto corto en cada pulso
-    const y = GY - 12 - Math.round(pulso * 2) - (marcha ? Math.round(Math.abs(Math.sin(t * 8 + g.fase)) * 2) : 0);
-    const paso = marcha ? Math.sin(t * 12 + g.fase) : 0;
-    // patas
-    rect(px - 3 + Math.round(paso * 2), y + 6, 1, GY - y - 6, NEGRO);
-    rect(px + 2 - Math.round(paso * 2), y + 6, 1, GY - y - 6, NEGRO);
-    rect(px - 4 + Math.round(paso * 2), GY - 1, 2, 1, NEGRO); rect(px + 2 - Math.round(paso * 2), GY - 1, 2, 1, NEGRO);
-    // cuerpo y ojo (el ojo mira al frente; se entorna al atacar)
-    disco(ctx, px, y, 7, NEGRO);
-    disco(ctx, px + 1, y - 1, 4, '#F4F1E6');
-    if (ataque) rect(px - 3, y - 3, 8, 2, NEGRO);
-    rect(px + 2, y - 2, 2, 2, NEGRO);
-    // brazo y objeto
-    const emp = ataque ? Math.round(Math.max(0, Math.sin((t % BEAT) / BEAT * Math.PI)) * 6) : 0;
-    rect(px + 5, y + 2, 3, 1, NEGRO);
-    if (g.porta === 'lanza') { rect(px + 7 + emp - 10, y - 1 + (ataque ? 3 : 0), ataque ? 16 : 1, 1, NEGRO); if (!ataque) rect(px + 7, y - 10, 1, 16, NEGRO); else rect(px + 7 + emp + 6, y + 1, 2, 3, '#C9CCD2'); if (!ataque) rect(px + 6, y - 12, 3, 2, '#C9CCD2'); }
-    if (g.porta === 'bandera') { rect(px + 7, y - 22, 1, 28, NEGRO); rect(px + 8, y - 22, 9, 6, '#B8322A'); rect(px + 8, y - 16, 5, 1, '#B8322A'); disco(ctx, px + 12, y - 19, 1, '#F2C14E'); }
-    if (g.porta === 'antorcha') { rect(px + 7, y - 10, 1, 14, NEGRO); const fl = Math.floor(t * 10) % 2; rect(px + 6, y - 14 - fl, 3, 4 + fl, '#F2A33A'); rect(px + 7, y - 13, 1, 2, '#FFE39A'); }
+  // ---- Guerreros stickman: esqueleto + cinemática inversa, dibujado con líneas de 1 px.
+  // Medidas en píxeles: cabeza r3, torso 9, muslo 6, pierna 6, brazo 5, antebrazo 5.
+  const NEGRO = '#15131A', METAL = '#C9CCD2';
+  const TORSO = 9, MUSLO = 6, PIERNA = 6, BRAZO = 5, ANTEB = 5;
+  const VEL = 30;                      // px/s que avanza el mundo al marchar
+  const ZANCADA = VEL * BEAT / 2;      // lo que recorre un pie apoyado: 7.5 px (así no patina)
+  const smooth = (u) => u * u * (3 - 2 * u);
+  const easeOut = (u) => 1 - (1 - u) * (1 - u);
+  // Línea de Bresenham: píxeles enteros, sin antialiasing.
+  function linea(x0, y0, x1, y1, c) {
+    x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+    ctx.fillStyle = c;
+    const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx2 = x0 < x1 ? 1 : -1, sy2 = y0 < y1 ? 1 : -1;
+    let e = dx + dy;
+    for (;;) {
+      ctx.fillRect(x0, y0, 1, 1);
+      if (x0 === x1 && y0 === y1) break;
+      const e2 = 2 * e;
+      if (e2 >= dy) { e += dy; x0 += sx2; }
+      if (e2 <= dx) { e += dx; y0 += sy2; }
+    }
   }
+  // IK de 2 huesos (ley de cosenos). dobla = -1 dobla hacia delante (rodilla), +1 hacia atrás (codo).
+  function ik(ax, ay, bx, by, l1, l2, dobla) {
+    let dx = bx - ax, dy = by - ay, d = Math.hypot(dx, dy) || 0.001;
+    const max = l1 + l2 - 0.01;
+    if (d > max) { bx = ax + dx / d * max; by = ay + dy / d * max; d = max; }
+    const a = Math.atan2(by - ay, bx - ax);
+    const c = Math.max(-1, Math.min(1, (l1 * l1 + d * d - l2 * l2) / (2 * l1 * d)));
+    const ang = a + dobla * Math.acos(c);
+    return { jx: ax + Math.cos(ang) * l1, jy: ay + Math.sin(ang) * l1, ex: bx, ey: by };
+  }
+  function miembro(ax, ay, bx, by, l1, l2, dobla) {
+    const r = ik(ax, ay, bx, by, l1, l2, dobla);
+    linea(ax, ay, r.jx, r.jy, NEGRO); linea(r.jx, r.jy, r.ex, r.ey, NEGRO);
+    return r;
+  }
+
+  function guerrero(g, px, dt) {
+    // Pesos que se mezclan suave para pasar de una animación a otra sin saltos.
+    const quiereMarcha = orden === 'marchar' ? 1 : 0, quiereAtaque = orden === 'atacar' ? 1 : 0;
+    g.wm = (g.wm ?? 0) + (quiereMarcha - (g.wm ?? 0)) * Math.min(1, dt * 14);
+    g.wa = (g.wa ?? 0) + (quiereAtaque - (g.wa ?? 0)) * Math.min(1, dt * 14);
+    const wm = g.wm, wa = g.wa;
+    const p = (t % BEAT) / BEAT;                 // fase dentro del pulso: 0 = golpe de tambor
+
+    // Salto corto cuando el jugador acierta un golpe
+    g.salto = Math.max(0, (g.salto ?? 0) - dt);
+    const hop = g.salto > 0 ? Math.sin(Math.PI * (1 - g.salto / 0.22)) * 3 : 0;
+
+    // Cadera: rodillas algo dobladas; al marchar baja 1 px en cada apoyo; en reposo respira.
+    const respira = Math.sin(t * 2.2 + g.fase) * 0.5 + 0.5;
+    let hx = px, hy = GY - (MUSLO + PIERNA) + 1;
+    hy += wm * (0.5 + 0.5 * Math.cos(4 * Math.PI * p)) - hop;
+    hx += wa * (attackLunge(p) * 2);
+
+    // Piernas: un ciclo = un pulso. El pie apoyado retrocede exactamente a la velocidad del suelo.
+    const pies = [0, 1].map((k) => {
+      const u = (p + k * 0.5) % 1;
+      let rel, lift;
+      if (u < 0.5) { const s2 = u / 0.5; rel = ZANCADA / 2 - ZANCADA * s2; lift = 0; }
+      else { const s2 = (u - 0.5) / 0.5; rel = -ZANCADA / 2 + ZANCADA * smooth(s2); lift = 3 * Math.sin(Math.PI * s2); }
+      const reposo = k ? 3 : -2;               // postura abierta en reposo
+      const ataque = k ? 5 : -4;               // zancada de estocada
+      const fx = px + wm * rel + (1 - wm) * (wa * ataque + (1 - wa) * reposo);
+      const fy = GY - 1 - wm * lift - Math.max(0, hop - 1.5);
+      return [fx, fy];
+    });
+    // pierna de atrás primero
+    for (const [fx, fy] of pies) {
+      const r = miembro(hx, hy, fx, fy, MUSLO, PIERNA, -1);
+      linea(r.ex, r.ey, r.ex + 1, r.ey, NEGRO);                     // pie de 2 px
+    }
+
+    // Torso y cabeza
+    const incl = wm * 1 + wa * attackLunge(p) * 2;
+    const shx = hx + incl, shy = hy - TORSO + Math.round((1 - wm) * (1 - wa) * respira);
+    linea(hx, hy, shx, shy, NEGRO);
+    linea(hx + 1, hy - 1, shx + 1, shy + 1, NEGRO);                  // torso de 2 px para dar peso
+    const cx = Math.round(shx + incl * 0.3), cy = Math.round(shy - 4);
+    disco(ctx, cx, cy, 3, NEGRO);
+    rect(cx, cy - 1, 2, 2, '#F4F1E6');                               // ojo
+    rect(cx + 1, cy - (wa > 0.5 ? 1 : 0), 1, 1, NEGRO);              // pupila (entornada al atacar)
+    if (wa > 0.5) rect(cx - 1, cy - 2, 4, 1, NEGRO);                 // ceja de enfado
+
+    // Brazo de atrás: se balancea opuesto a la pierna delantera
+    const bal = Math.sin(2 * Math.PI * p);
+    miembro(shx, shy + 1, shx - 1 - wm * 3 * bal, shy + 1 + 8 - wm * Math.abs(bal), BRAZO, ANTEB, 1);
+
+    // Brazo de delante y objeto
+    let luz = null;
+    if (g.porta === 'lanza') {
+      // En reposo/marcha la lanza va vertical; al atacar pasa a horizontal y se clava en el golpe.
+      const ang = -Math.PI / 2 * (1 - wa) - 0.15 * wm * (1 - wa);   // -90° vertical → 0° horizontal
+      const empuje = wa * attackThrust(p);
+      const hxm = shx + 4 + empuje, hym = shy + 5 - wa * 1;
+      const r = miembro(shx, shy + 1, hxm, hym, BRAZO, ANTEB, 1);
+      const ux = Math.cos(ang), uy = Math.sin(ang);
+      linea(r.ex - ux * 7, r.ey - uy * 7, r.ex + ux * 17, r.ey + uy * 17, NEGRO);
+      linea(r.ex + ux * 17, r.ey + uy * 17, r.ex + ux * 20, r.ey + uy * 20, METAL);
+    } else if (g.porta === 'bandera') {
+      const r = miembro(shx, shy + 1, shx + 4, shy + 4, BRAZO, ANTEB, 1);
+      const bx = Math.round(r.ex), top = Math.round(r.ey) - 20;
+      linea(bx, r.ey + 8, bx, top, NEGRO);
+      for (let i = 0; i < 9; i++) {                                     // tela que ondea columna a columna
+        const ond = Math.round(Math.sin(t * 8 - i * 0.7) * (i / 9) * 1.5);
+        rect(bx + 1 + i, top + ond, 1, i < 7 ? 6 : 6 - (i - 6) * 2, '#B8322A');
+      }
+      disco(ctx, bx + 5, top + 3 + Math.round(Math.sin(t * 8 - 3) * 0.6), 1, '#F2C14E');
+    } else if (g.porta === 'antorcha') {
+      const r = miembro(shx, shy + 1, shx + 4, shy - 3 + Math.round(wm * bal * 0.8), BRAZO, ANTEB, 1);
+      const ax = Math.round(r.ex), ay = Math.round(r.ey);
+      linea(ax, ay + 4, ax, ay - 5, '#5B4430');
+      const fl = Math.floor(t * 10 + g.fase) % 3;
+      rect(ax - 1, ay - 9 - (fl === 1 ? 1 : 0), 3, 4 + (fl === 1 ? 1 : 0), '#F2A33A');
+      rect(ax, ay - 8 - fl % 2, 1, 2, '#FFE39A');
+      luz = { x: ax, y: ay - 8, tam: 'chica', fuerza: 1 };
+    }
+    return luz;
+  }
+  // Estocada: preparar (0–0.4), clavar justo después del golpe siguiente (0.4–0.55), sostener, volver.
+  function attackThrust(p) {
+    if (p < 0.4) return -3 * easeOut(p / 0.4);
+    if (p < 0.55) return -3 + 11 * easeOut((p - 0.4) / 0.15);
+    if (p < 0.7) return 8;
+    return 8 - 8 * smooth((p - 0.7) / 0.3);
+  }
+  const attackLunge = (p) => attackThrust(p) / 8;
 
   // ---- Oscuridad con halos elípticos (misma técnica que la escena del reino)
   const capa = document.createElement('canvas'); capa.width = W; capa.height = H; const cx2 = capa.getContext('2d');
@@ -163,7 +270,8 @@
     t += dt;
     noche += (nocheObj - noche) * Math.min(1, dt * 1.5);
     if (orden && t >= ordenFin) orden = null;
-    if (orden === 'marchar') camX += 30 * dt;
+    if (orden === 'marchar') camX += VEL * dt;
+    dtDibujo = dt;
     for (const s of textos) s.a += dt;
     textos = textos.filter((s) => s.a < 0.6);
     // metrónomo suave
@@ -179,7 +287,7 @@
     for (let k = -1; k < W / 90 + 2; k++) { const i = k + Math.floor(camX / 90), x = sx(i * 90 + hash(i, 4) * 50, 1);
       if (hash(i, 5) < 0.5) { disco(ctx, x, GY - 2, 4, mix('#7B7D78', '#2A2C33', noche)); } else { rect(x, GY - 16, 2, 16, mix('#5B4430', '#1B1510', noche)); } }
     const luces = [];
-    for (const g of tropa) { guerrero(g, g.x); if (g.porta === 'antorcha') luces.push({ x: g.x + 7, y: GY - 26, tam: 'chica', fuerza: 1 }); }
+    for (const g of tropa) { const l = guerrero(g, g.x, dtDibujo); if (l) luces.push(l); }
     // tambores que se ven arriba
     for (const s of textos) { ctx.globalAlpha = 1 - s.a / 0.6; texto(s.s, s.x, s.y - Math.round(s.a * 12), s.ok ? '#FFF1C2' : '#8C8C8C'); }
     ctx.globalAlpha = 1;
@@ -207,8 +315,8 @@
   // ?shot=1 simula unos segundos y deja la imagen en #out (para capturas automáticas)
   if (P.has('shot')) {
     if (P.get('orden')) { orden = P.get('orden'); ordenFin = 99; }
-    for (let i = 0; i < 90; i++) paso(1 / 60);
-    dibujar();
+    const n = Math.round((+P.get('sim') || 1.5) * 60);
+    for (let i = 0; i < n; i++) { paso(1 / 60); dibujar(); }
     const pre = document.createElement('pre'); pre.id = 'out'; pre.textContent = buf.toDataURL(); document.body.appendChild(pre);
     return;
   }
