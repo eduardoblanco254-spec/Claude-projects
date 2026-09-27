@@ -53,3 +53,16 @@ cual a otro juego. `demo.html` la usa en un prototipo con ritmo al estilo Patapo
 - Ataque en 4 tiempos dentro del pulso: preparar, estocada rápida, sostener, volver. Las animaciones se
   mezclan con pesos suaves para no dar saltos al cambiar de orden. Acertar un golpe hace saltar a la tropa.
 - `demo.html?shot=1&sim=2&orden=marchar` simula 2 s y deja la imagen en `#out` (para capturas).
+
+### Movimiento independiente y música
+
+- **Personalidad por guerrero** (semilla fija): retraso de reacción (0–70 ms), torso de 8–10 px, "oído"
+  musical, brío (fuerza de estocada y salto) y deriva lenta dentro de la formación.
+- **Pies con memoria**: el pie apoyado queda clavado en su punto del mundo; solo cambia de sitio dando un
+  paso (arco con elevación). En reposo, si un pie queda a más de 1.5 px de su sitio da un paso de ajuste,
+  de uno en uno. `demo.html?prueba=pies` lo verifica: deriva máxima de un pie apoyado = 0 px.
+- **Gestos en reposo** cada pocos segundos: cambiar el peso, mirar al cielo, golpear la lanza al pulso.
+- **Música** (Web Audio, sin archivos): melodía pentatónica en corcheas, bajo por pulso y charles a
+  120 ppm. El reloj del audio manda sobre el tiempo del juego, así pasos y notas no se separan. Cada
+  guerrero cabecea con las notas según su oído; al recibir una orden la tropa la canta de vuelta.
+  M = silenciar la música.

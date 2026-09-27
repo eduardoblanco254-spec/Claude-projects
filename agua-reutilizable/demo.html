@@ -12,7 +12,7 @@
 </head>
 <body>
 <canvas id="pantalla"></canvas>
-<div id="ayuda">A = PATA · D = PON · al ritmo · PATA PATA PATA PON = marchar · PON PON PATA PON = atacar · N = noche · V = viento</div>
+<div id="ayuda">A = PATA · D = PON · al ritmo de la música (M = música) · PATA PATA PATA PON = marchar · PON PON PATA PON = atacar · N = noche · V = viento</div>
 <script src="agua.js"></script>
 <script>
 (() => {
@@ -40,19 +40,60 @@
   const BEAT = 0.5;                          // un golpe de tambor cada medio segundo
   let dtDibujo = 1 / 60;
   let combo = [], orden = null, ordenFin = 0, textos = [];
-  const tropa = [0, 1, 2, 3, 4, 5].map((i) => ({ i, x: 150 - i * 20, fase: hash(i, 3) * 6, porta: i === 0 ? 'bandera' : i === 3 ? 'antorcha' : 'lanza' }));
+  // Cada guerrero tiene su "personalidad": retraso de reacción, estatura, oído musical, brío y gestos.
+  const tropa = [0, 1, 2, 3, 4, 5].map((i) => ({
+    i, x: 150 - i * 20, fase: hash(i, 3) * 6, porta: i === 0 ? 'bandera' : i === 3 ? 'antorcha' : 'lanza',
+    retraso: hash(i, 11) * 0.07, torso: 8 + Math.floor(hash(i, 12) * 3), oido: 0.4 + 0.6 * hash(i, 13),
+    vagar: hash(i, 14) * 100, brio: 0.7 + 0.6 * hash(i, 15),
+    gesto: null, proxGesto: 1 + hash(i, 16) * 4, pies: null,
+  }));
 
-  // ---- Sonido (tambores sintetizados)
-  let ac = null;
-  function tambor(frec, dur = 0.12, vol = 0.35) {
-    try {
-      ac = ac || new AudioContext();
-      const o = ac.createOscillator(), g = ac.createGain();
-      o.type = 'triangle'; o.frequency.setValueAtTime(frec, ac.currentTime);
-      o.frequency.exponentialRampToValueAtTime(frec * 0.5, ac.currentTime + dur);
-      g.gain.setValueAtTime(vol, ac.currentTime); g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + dur);
-      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + dur);
-    } catch (_) {}
+  // ---- Música. El reloj del audio manda: t = ac.currentTime - desfase, así pasos y notas no se separan.
+  // Melodía pentatónica (la menor) en corcheas de 0.25 s, 2 compases que se repiten. null = silencio.
+  const NOTA = { A3: 220, C4: 261.6, D4: 293.7, E4: 329.6, G4: 392, A4: 440, C5: 523.3, D5: 587.3, E5: 659.3 };
+  const MELODIA = ['A4', null, 'C5', 'A4', 'G4', null, 'E4', null, 'D4', 'E4', 'G4', null, 'A4', null, null, null,
+                   'A4', null, 'C5', 'D5', 'E5', null, 'D5', 'C5', 'A4', null, 'G4', 'E4', 'A4', null, null, null];
+  const BAJO = ['A3', 'A3', 'E4', 'A3', 'C4', 'C4', 'G4', 'E4'].map((n) => NOTA[n] / 2);   // una por pulso
+  const CANTO = { marchar: ['E5', 'E5', 'E5', 'A4'], atacar: ['A4', 'A4', 'E5', 'A4'] };    // la tropa responde
+  const CORCHEA = BEAT / 2;
+  let ac = null, desfase = 0, programado = 0, musica = true, canto = null;
+  function sonar(frec, cuando, dur, vol, tipo = 'triangle', caida = 0.5) {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = tipo; o.frequency.setValueAtTime(frec, cuando);
+    if (caida !== 1) o.frequency.exponentialRampToValueAtTime(frec * caida, cuando + dur);
+    g.gain.setValueAtTime(0.0001, cuando); g.gain.linearRampToValueAtTime(vol, cuando + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, cuando + dur);
+    o.connect(g).connect(ac.destination); o.start(cuando); o.stop(cuando + dur + 0.02);
+  }
+  function iniciarAudio() {
+    if (ac) return;
+    try { ac = new AudioContext(); desfase = ac.currentTime - t; programado = Math.ceil(t / CORCHEA); } catch (_) { ac = null; }
+  }
+  function tambor(frec, dur = 0.12, vol = 0.35) { if (ac) sonar(frec, ac.currentTime, dur, vol); }
+  // Programa las corcheas de los próximos 0.15 s (planificador con margen, sin cortes).
+  function programar() {
+    if (!ac) return;
+    const hasta = ac.currentTime - desfase + 0.15;
+    while (programado * CORCHEA < hasta) {
+      const n = programado++, cuando = n * CORCHEA + desfase;
+      if (cuando < ac.currentTime) continue;
+      if (musica) {
+        const m = MELODIA[n % MELODIA.length];
+        if (m) sonar(NOTA[m], cuando, 0.22, 0.07, 'square', 1);
+        if (n % 2 === 0) sonar(BAJO[(n / 2) % BAJO.length], cuando, 0.4, 0.16, 'triangle', 1);
+        sonar(n % 2 ? 5200 : 7000, cuando, 0.03, n % 2 ? 0.012 : 0.02, 'square', 1);     // charles
+      }
+      // Canto de la tropa: una sílaba por pulso mientras cumple la orden.
+      if (canto && n % 2 === 0) {
+        const k = n / 2 - canto.pulso0;
+        if (k >= 0 && k < 4) sonar(NOTA[CANTO[canto.orden][k]], cuando, 0.3, 0.09, 'sawtooth', 0.98);
+      }
+    }
+  }
+  // Envolvente de la melodía en el instante t (la usan los guerreros para moverse con la música).
+  function pulsoMelodia(tt) {
+    const n = Math.floor(tt / CORCHEA), m = MELODIA[((n % MELODIA.length) + MELODIA.length) % MELODIA.length];
+    return m ? { e: Math.exp(-(tt - n * CORCHEA) * 12), alto: (NOTA[m] - 330) / 330 } : { e: 0, alto: 0 };
   }
 
   // ---- Ritmo: cada golpe debe caer cerca de un pulso
@@ -64,11 +105,17 @@
     for (const g of tropa) g.salto = 0.22;
     combo.push(tipo); if (combo.length > 4) combo.shift();
     const k = combo.join(' ');
-    if (k === 'PATA PATA PATA PON') { orden = 'marchar'; ordenFin = t + BEAT * 4; combo = []; }
-    if (k === 'PON PON PATA PON')   { orden = 'atacar';  ordenFin = t + BEAT * 4; combo = []; }
+    const nueva = k === 'PATA PATA PATA PON' ? 'marchar' : k === 'PON PON PATA PON' ? 'atacar' : null;
+    if (nueva) {
+      const pulso0 = Math.round(t / BEAT) + 1;              // empieza en el pulso siguiente
+      orden = nueva; ordenFin = pulso0 * BEAT + BEAT * 4; combo = [];
+      canto = { orden: nueva, pulso0 };
+    }
   }
   addEventListener('keydown', (e) => {
     if (e.repeat) return;
+    iniciarAudio();
+    if (e.code === 'KeyM') musica = !musica;
     if (e.code === 'KeyA' || e.code === 'KeyJ') golpe('PATA');
     if (e.code === 'KeyD' || e.code === 'KeyK') golpe('PON');
     if (e.code === 'KeyN') nocheObj = nocheObj ? 0 : 1;
@@ -152,76 +199,118 @@
     return r;
   }
 
+  // Pies con memoria: un pie apoyado se queda clavado en su punto del MUNDO; solo se mueve dando un paso.
+  // Así, aunque la cadera se desplace (vagar, estocada, cambio de peso), los pies nunca patinan.
+  function moverPie(pie, destino, s, lift) {
+    pie.x = pie.sw.desde + (destino - pie.sw.desde) * smooth(Math.min(1, s));
+    pie.y = GY - 1 - lift * Math.sin(Math.PI * Math.min(1, s));
+  }
+  function actualizarPies(g, hipW, marcha, p, reposo, dt) {
+    if (!g.pies) g.pies = reposo.map((o) => ({ x: hipW + o, y: GY - 1, sw: null }));
+    g.pies.forEach((pie, k) => {
+      if (marcha) {
+        const u = (p + k * 0.5) % 1;
+        if (u < 0.5) {                                   // apoyo: el pie no se mueve
+          if (pie.sw) { pie.x = pie.sw.dest; pie.sw = null; }
+          pie.y = GY - 1;
+        } else {                                         // vuelo: va a donde estará la cadera al aterrizar
+          const s2 = (u - 0.5) / 0.5;
+          if (!pie.sw) pie.sw = { desde: pie.x, s: 0, dur: BEAT / 2 };
+          pie.sw.s = s2;
+          pie.sw.dest = hipW + VEL * (1 - s2) * BEAT / 2 + ZANCADA / 2;
+          moverPie(pie, pie.sw.dest, s2, 3);
+        }
+      } else {
+        const dest = hipW + reposo[k];
+        if (pie.sw) {                                    // termina el paso en curso hacia su sitio
+          pie.sw.s += dt / pie.sw.dur;
+          pie.sw.dest = dest;
+          moverPie(pie, dest, pie.sw.s, 2);
+          if (pie.sw.s >= 1) { pie.x = dest; pie.y = GY - 1; pie.sw = null; }
+        } else if (Math.abs(pie.x - dest) > 1.5 && !g.pies[1 - k].sw) {
+          pie.sw = { desde: pie.x, s: 0, dur: 0.16, dest };   // paso de ajuste (de uno en uno)
+        }
+      }
+    });
+  }
+
   function guerrero(g, px, dt) {
     // Pesos que se mezclan suave para pasar de una animación a otra sin saltos.
     const quiereMarcha = orden === 'marchar' ? 1 : 0, quiereAtaque = orden === 'atacar' ? 1 : 0;
     g.wm = (g.wm ?? 0) + (quiereMarcha - (g.wm ?? 0)) * Math.min(1, dt * 14);
     g.wa = (g.wa ?? 0) + (quiereAtaque - (g.wa ?? 0)) * Math.min(1, dt * 14);
     const wm = g.wm, wa = g.wa;
-    const p = (t % BEAT) / BEAT;                 // fase dentro del pulso: 0 = golpe de tambor
+    const tl = t - g.retraso;                    // cada uno reacciona con su propio retraso
+    const p = ((tl % BEAT) + BEAT) % BEAT / BEAT;
 
-    // Salto corto cuando el jugador acierta un golpe
+    // Gestos en reposo, uno cada pocos segundos y distinto para cada guerrero.
+    g.proxGesto -= dt;
+    if (!g.gesto && g.proxGesto <= 0 && !orden) {
+      const tipos = ['peso', 'mirar', g.porta === 'lanza' ? 'golpear' : 'peso'];
+      g.gesto = { tipo: tipos[Math.floor(hash(Math.floor(t * 10) + g.i * 31, 17) * 3)], a: 0, dur: 1.4 + hash(g.i, Math.floor(t)) * 0.8, lado: hash(g.i, Math.floor(t * 3)) < 0.5 ? -1 : 1 };
+      g.proxGesto = 2.5 + hash(g.i, Math.floor(t * 7)) * 4;
+    }
+    let ges = 0;
+    if (g.gesto) { g.gesto.a += dt; ges = Math.sin(Math.PI * Math.min(1, g.gesto.a / g.gesto.dur)); if (g.gesto.a >= g.gesto.dur || orden) g.gesto = null; }
+    const gt = g.gesto ? g.gesto.tipo : '';
+
+    // Música: cabeceo con cada nota de la melodía, según el "oído" de cada uno.
+    const mel = pulsoMelodia(tl), cab = mel.e * g.oido * (1 - wa);
+
+    // Salto corto cuando el jugador acierta un golpe (más alto cuanto más brío)
     g.salto = Math.max(0, (g.salto ?? 0) - dt);
-    const hop = g.salto > 0 ? Math.sin(Math.PI * (1 - g.salto / 0.22)) * 3 : 0;
+    const hop = g.salto > 0 ? Math.sin(Math.PI * (1 - g.salto / 0.22)) * 3 * g.brio : 0;
 
-    // Cadera: rodillas algo dobladas; al marchar baja 1 px en cada apoyo; en reposo respira.
-    const respira = Math.sin(t * 2.2 + g.fase) * 0.5 + 0.5;
-    let hx = px, hy = GY - (MUSLO + PIERNA) + 1;
-    hy += wm * (0.5 + 0.5 * Math.cos(4 * Math.PI * p)) - hop;
-    hx += wa * (attackLunge(p) * 2);
+    // Cadera: vaga un poco dentro de la formación; baja en cada apoyo; respira a su propio ritmo.
+    const respira = Math.sin(t * (2 + g.oido) + g.fase) * 0.5 + 0.5;
+    const vag = Math.sin(t * 0.7 + g.vagar) * 1.5 + Math.sin(t * 0.31 + g.vagar * 2) * 1.5;
+    let hx = px + vag + wa * attackLunge(p) * 2 * g.brio + (gt === 'peso' ? ges * 1.5 * g.gesto.lado : 0);
+    let hy = GY - (MUSLO + PIERNA) + 1 + wm * (0.5 + 0.5 * Math.cos(4 * Math.PI * p)) - hop + cab * 0.8;
 
-    // Piernas: un ciclo = un pulso. El pie apoyado retrocede exactamente a la velocidad del suelo.
-    const pies = [0, 1].map((k) => {
-      const u = (p + k * 0.5) % 1;
-      let rel, lift;
-      if (u < 0.5) { const s2 = u / 0.5; rel = ZANCADA / 2 - ZANCADA * s2; lift = 0; }
-      else { const s2 = (u - 0.5) / 0.5; rel = -ZANCADA / 2 + ZANCADA * smooth(s2); lift = 3 * Math.sin(Math.PI * s2); }
-      const reposo = k ? 3 : -2;               // postura abierta en reposo
-      const ataque = k ? 5 : -4;               // zancada de estocada
-      const fx = px + wm * rel + (1 - wm) * (wa * ataque + (1 - wa) * reposo);
-      const fy = GY - 1 - wm * lift - Math.max(0, hop - 1.5);
-      return [fx, fy];
-    });
-    // pierna de atrás primero
-    for (const [fx, fy] of pies) {
-      const r = miembro(hx, hy, fx, fy, MUSLO, PIERNA, -1);
+    const reposo = wa > 0.5 ? [-4, 5] : [-2, 3];
+    actualizarPies(g, hx + camX, wm > 0.5, p, reposo, dt);
+    for (const pie of g.pies) {
+      const fy = pie.y - Math.max(0, hop - 1.5);
+      const r = miembro(hx, hy, pie.x - camX, fy, MUSLO, PIERNA, -1);
       linea(r.ex, r.ey, r.ex + 1, r.ey, NEGRO);                     // pie de 2 px
     }
 
     // Torso y cabeza
-    const incl = wm * 1 + wa * attackLunge(p) * 2;
-    const shx = hx + incl, shy = hy - TORSO + Math.round((1 - wm) * (1 - wa) * respira);
+    const incl = wm * 1 + wa * attackLunge(p) * 2 * g.brio + cab * 0.6;
+    const shx = hx + incl, shy = hy - g.torso + Math.round((1 - wm) * (1 - wa) * respira);
     linea(hx, hy, shx, shy, NEGRO);
     linea(hx + 1, hy - 1, shx + 1, shy + 1, NEGRO);                  // torso de 2 px para dar peso
-    const cx = Math.round(shx + incl * 0.3), cy = Math.round(shy - 4);
+    const mira = gt === 'mirar' ? ges : 0;                          // levanta la vista al cielo
+    const cx = Math.round(shx + incl * 0.3 - mira), cy = Math.round(shy - 4 - mira + cab * 0.5);
     [3, 5, 5, 5, 3].forEach((w, i) => rect(cx - (w >> 1), cy - 2 + i, w, 1, NEGRO)); // cabeza redonda 5×5
 
-    // Brazo de atrás: se balancea opuesto a la pierna delantera
+    // Brazo de atrás: se balancea opuesto a la pierna delantera; con la música se mece.
     const bal = Math.sin(2 * Math.PI * p);
-    miembro(shx, shy + 1, shx - 1 - wm * 3 * bal, shy + 1 + 8 - wm * Math.abs(bal), BRAZO, ANTEB, 1);
+    miembro(shx, shy + 1, shx - 1 - wm * 3 * bal - cab * 1.5 * mel.alto, shy + 9 - wm * Math.abs(bal) - cab * 2, BRAZO, ANTEB, 1);
 
     // Brazo de delante y objeto
     let luz = null;
     if (g.porta === 'lanza') {
-      // En reposo/marcha la lanza va vertical; al atacar pasa a horizontal y se clava en el golpe.
       const ang = -Math.PI / 2 * (1 - wa) - 0.15 * wm * (1 - wa);   // -90° vertical → 0° horizontal
-      const empuje = wa * attackThrust(p);
-      const hxm = shx + 4 + empuje, hym = shy + 5 - wa * 1;
+      const empuje = wa * attackThrust(p) * g.brio;
+      const golpea = gt === 'golpear' ? Math.max(0, Math.sin(Math.PI * 2 * g.gesto.a / BEAT)) * 2 : 0;  // golpea el suelo al pulso
+      const hxm = shx + 4 + empuje, hym = shy + 5 - wa * 1 + golpea;
       const r = miembro(shx, shy + 1, hxm, hym, BRAZO, ANTEB, 1);
       const ux = Math.cos(ang), uy = Math.sin(ang);
-      linea(r.ex - ux * 7, r.ey - uy * 7, r.ex + ux * 17, r.ey + uy * 17, NEGRO);
+      const atras = Math.min(7, GY - 1 - r.ey);                      // la lanza nunca atraviesa el suelo
+      linea(r.ex - ux * atras, r.ey - uy * atras, r.ex + ux * 17, r.ey + uy * 17, NEGRO);
       linea(r.ex + ux * 17, r.ey + uy * 17, r.ex + ux * 20, r.ey + uy * 20, METAL);
     } else if (g.porta === 'bandera') {
-      const r = miembro(shx, shy + 1, shx + 4, shy + 4, BRAZO, ANTEB, 1);
+      const r = miembro(shx, shy + 1, shx + 4, shy + 4 - cab, BRAZO, ANTEB, 1);
       const bx = Math.round(r.ex), top = Math.round(r.ey) - 20;
-      linea(bx, r.ey + 8, bx, top, NEGRO);
+      linea(bx, Math.min(GY - 1, r.ey + 8), bx, top, NEGRO);
       for (let i = 0; i < 9; i++) {                                     // tela que ondea columna a columna
-        const ond = Math.round(Math.sin(t * 8 - i * 0.7) * (i / 9) * 1.5);
+        const ond = Math.round(Math.sin(t * (6 + 4 * viento) - i * 0.7) * (i / 9) * 1.5);
         rect(bx + 1 + i, top + ond, 1, i < 7 ? 6 : 6 - (i - 6) * 2, '#B8322A');
       }
       disco(ctx, bx + 5, top + 3 + Math.round(Math.sin(t * 8 - 3) * 0.6), 1, '#F2C14E');
     } else if (g.porta === 'antorcha') {
-      const r = miembro(shx, shy + 1, shx + 4, shy - 3 + Math.round(wm * bal * 0.8), BRAZO, ANTEB, 1);
+      const r = miembro(shx, shy + 1, shx + 4, shy - 3 + Math.round(wm * bal * 0.8) - cab, BRAZO, ANTEB, 1);
       const ax = Math.round(r.ex), ay = Math.round(r.ey);
       linea(ax, ay + 4, ax, ay - 5, '#5B4430');
       const fl = Math.floor(t * 10 + g.fase) % 3;
@@ -271,8 +360,8 @@
     dtDibujo = dt;
     for (const s of textos) s.a += dt;
     textos = textos.filter((s) => s.a < 0.6);
-    // metrónomo suave
-    const b = Math.floor(t / BEAT); if (b !== paso.b) { paso.b = b; if (!P.has('shot')) tambor(orden ? 90 : 60, 0.05, orden ? 0.12 : 0.05); }
+    if (canto && t > (canto.pulso0 + 4) * BEAT) canto = null;
+    programar();
   }
   function dibujar() {
     cielo();
@@ -310,6 +399,27 @@
   addEventListener('resize', ajustar); ajustar();
 
   // ?shot=1 simula unos segundos y deja la imagen en #out (para capturas automáticas)
+  // ?prueba=pies: simula reposo → marcha → reposo → ataque y mide cuánto se mueve un pie apoyado (debe ser 0).
+  if (P.get('prueba') === 'pies') {
+    let maxDeriva = 0, pasos = 0; const prev = new Map();
+    const fases = [[1.3, null], [2, 'marchar'], [1.5, null], [2, 'atacar'], [2, null], [2, 'marchar'], [3, null]];
+    for (const [dur, o] of fases) {
+      if (o) { orden = o; ordenFin = t + dur; }
+      for (let i = 0, n = Math.round(dur * 60); i < n; i++) {
+        paso(1 / 60); dibujar();
+        for (const g of tropa) g.pies.forEach((pie, k) => {
+          const key = g.i * 2 + k, antes = prev.get(key);
+          if (!pie.sw && antes && !antes.sw) maxDeriva = Math.max(maxDeriva, Math.abs(pie.x - antes.x));
+          if (pie.sw && !(antes && antes.sw)) pasos++;
+          prev.set(key, { x: pie.x, sw: !!pie.sw });
+        });
+      }
+    }
+    const pre = document.createElement('pre'); pre.id = 'out';
+    pre.textContent = `deriva máxima de un pie apoyado: ${maxDeriva.toFixed(4)} px · pasos dados: ${pasos}`;
+    document.body.appendChild(pre);
+    return;
+  }
   if (P.has('shot')) {
     if (P.get('orden')) { orden = P.get('orden'); ordenFin = 99; }
     const n = Math.round((+P.get('sim') || 1.5) * 60);
@@ -319,7 +429,9 @@
   }
   let last = performance.now();
   requestAnimationFrame(function frame(now) {
-    paso(Math.min(0.05, (now - last) / 1000)); last = now;
+    // Con audio, el tiempo del juego sigue al reloj de audio (sin deriva entre pasos y música).
+    const dt = ac ? Math.max(0, Math.min(0.05, ac.currentTime - desfase - t)) : Math.min(0.05, (now - last) / 1000);
+    last = now; paso(dt);
     dibujar();
     pctx.drawImage(buf, 0, 0, pantalla.width, pantalla.height);
     requestAnimationFrame(frame);
