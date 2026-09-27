@@ -734,12 +734,14 @@ def render_views(w=1920, h=1080, samples=128):
     sc.render.resolution_x, sc.render.resolution_y = w, h; cy.samples = samples
     os.makedirs(os.path.join(OUT, 'vistas'), exist_ok=True)
     views = {
-        'aerea': ((24, -26, 22), (5.2, -5.5, 0), 26, True),
+        'aerea': ((-6, 13, 21), (5.2, -4.8, 0), 24, True),
         'comedor': ((11.0, -3.0, 1.5), (5.0, -1.8, 1.2), 14, False),
         'patio': ((17.5, -12.5, 1.7), (9, -3, 1.4), 18, False),
         'garaje': ((-3.4, -6.2, 1.7), (-3.4, 0, 1.2), 14, False),
     }
+    only = [v for v in os.environ.get('VIEW_KEYS', '').split(',') if v]
     for k, (loc, tgt, lens, hide_roof) in views.items():
+        if only and k not in only: continue
         for c in (COL['Techos'],): c.hide_render = hide_roof
         for ob in COL['Garaje'].objects:
             if ob.name.startswith('techo garaje') or ob.name.startswith('correa'): ob.hide_render = hide_roof
