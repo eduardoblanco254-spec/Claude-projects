@@ -1,21 +1,32 @@
 // 99_principal.js — bucle, escalado entero, orden de actualización/dibujo y modos de prueba por URL.
 (function (G) {
   const U = G.u, W = G.W, H = G.H, BEAT = G.BEAT, P = G.P;
-  const pantalla = document.getElementById('pantalla'), pctx = pantalla.getContext('2d');
+  const pantalla = document.getElementById('pantalla');
   G.pantalla = pantalla;
+  // Capa de interfaz (transparente) encima del mundo; el agua WebGL se compone entre ambas.
+  const capaUI = G.lienzo(W, H);
+  G.bufUI = capaUI.c;
+  const ctxMundo = G.ctx;
+  const usarGL = !P.has('sin_gl') && G.aguaGL.iniciar(pantalla);
+  const pctx = usarGL ? null : pantalla.getContext('2d');
   let escala = 1;
   function ajustar() {
-    escala = Math.max(1, Math.floor(Math.min(innerWidth / W, innerHeight / H)));
-    if (innerWidth / W < 1 || innerHeight / H < 1) escala = Math.min(innerWidth / W, innerHeight / H);
-    pantalla.width = Math.round(W * escala); pantalla.height = Math.round(H * escala);
-    pantalla.style.left = Math.round((innerWidth - pantalla.width) / 2) + 'px';
-    pantalla.style.top = Math.round((innerHeight - pantalla.height) / 2) + 'px';
-    pctx.imageSmoothingEnabled = false;
+    const fijo = G.prueba;                                   // en pruebas: 2× fijo (960×540)
+    escala = fijo ? 2 : Math.max(1, Math.floor(Math.min(innerWidth / W, innerHeight / H)));
+    if (!fijo && (innerWidth / W < 1 || innerHeight / H < 1)) escala = Math.min(innerWidth / W, innerHeight / H);
+    // con WebGL el agua se dibuja a resolución real: usamos todo el alto disponible aunque no sea entero
+    if (!fijo && usarGL) escala = Math.min(innerWidth / W, innerHeight / H);
+    const dpr = usarGL && !fijo ? Math.min(2, window.devicePixelRatio || 1) : 1;
+    pantalla.width = Math.round(W * escala * dpr); pantalla.height = Math.round(H * escala * dpr);
+    pantalla.style.width = Math.round(W * escala) + 'px'; pantalla.style.height = Math.round(H * escala) + 'px';
+    pantalla.style.left = Math.round((innerWidth - W * escala) / 2) + 'px';
+    pantalla.style.top = Math.round((innerHeight - H * escala) / 2) + 'px';
+    if (pctx) pctx.imageSmoothingEnabled = false;
   }
   addEventListener('resize', ajustar); ajustar();
   G.audio.musica(G.prog.datos.musica);
 
-  const mundoVisible = () => ['juego', 'pausa', 'victoria', 'derrota', 'titulo'].includes(G.estado);
+  const mundoVisible = () => ['juego', 'pausa', 'victoria', 'derrota', 'titulo', 'campamento', 'mapa', 'ajustes'].includes(G.estado);
 
   function actualizar(dt) {
     G.dt = dt;
@@ -30,31 +41,45 @@
       G.combate.actualizar(dt);
       G.actualizarNivel(dt);
       G.actualizarCamara(dt);
-    } else if (G.estado === 'titulo') {
-      G.escena.actualizar(dt); G.tropa.actualizar(dt);
+    } else if (G.estado === 'titulo' || G.estado === 'campamento') {
+      G.escena.actualizar(dt); G.tropa.actualizar(dt); G.combate.actualizar(dt);
     }
   }
   function dibujar(dt) {
     G.luces = [];
+    G.ctx = ctxMundo;
+    const dtv = G.estado === 'pausa' ? 0 : dt;
     if (mundoVisible()) {
       G.escena.dibujarFondo();
       G.enem.dibujar(dt);
       G.tropa.dibujar(dt);
       G.combate.dibujar();
       G.escena.oscuridad();
-      G.escena.niebla();
-      G.escena.agua();
-      G.escena.lluvia(G.estado === 'pausa' ? 0 : dt);
-      G.combate.dibujarTextos();
-    }
+      G.escena.despues(dtv);
+      if (!usarGL) G.escena.agua2D();
+    } else { ctxMundo.fillStyle = '#0D0F16'; ctxMundo.fillRect(0, 0, W, H); }
+    // Capa de interfaz: lluvia, textos flotantes y pantallas
+    G.ctx = capaUI.x;
+    capaUI.x.clearRect(0, 0, W, H);
+    if (mundoVisible()) { G.escena.lluvia(dtv); G.combate.dibujarTextos(); }
     G.ui.dibujar(dt);
+    G.ctx = ctxMundo;
   }
   function presentar() {
     let dx = 0, dy = 0;
-    if (G.temblor > 0) { dx = Math.round((Math.random() - 0.5) * 4 * escala); dy = Math.round((Math.random() - 0.5) * 3 * escala); }
-    pctx.fillStyle = '#0D0F16'; pctx.fillRect(0, 0, pantalla.width, pantalla.height);
-    pctx.drawImage(G.buf, dx, dy, pantalla.width, pantalla.height);
+    if (G.temblor > 0) { dx = (Math.random() - 0.5) * 4; dy = (Math.random() - 0.5) * 3; }
+    if (usarGL) {
+      const p = mundoVisible() ? G.escena.paramsAgua() : { osc: 0, viento: 0, agua: '#000000', cielo: '#000000', luces: [], ondas: [], sinAgua: true };
+      p.temblor = [dx * pantalla.width / W, dy * pantalla.height / H];
+      G.aguaGL.presentar(G.buf, G.bufUI, p);
+    } else {
+      pctx.fillStyle = '#0D0F16'; pctx.fillRect(0, 0, pantalla.width, pantalla.height);
+      const e = pantalla.width / W;
+      pctx.drawImage(G.buf, Math.round(dx * e), Math.round(dy * e), pantalla.width, pantalla.height);
+      pctx.drawImage(G.bufUI, 0, 0, pantalla.width, pantalla.height);
+    }
   }
+  G.presentar = presentar;
   G.paso = (dt) => { if (G.estado !== 'pausa') G.t += dt; actualizar(dt); dibujar(dt); };
 
   // ---- Jugador automático (pruebas): elige la orden y toca en el pulso (bien) o con errores grandes (mal)
@@ -111,7 +136,7 @@
       });
     };
     simularNivel(0, 'bien', 60, medir);
-    simularNivel(3, 'bien', 40, medir);
+    simularNivel(6, 'bien', 40, medir);
     salida(`deriva máxima de un pie apoyado: ${deriva.toFixed(4)} px (${peor || '-'}) · pasos: ${pasos}`);
     return;
   }
@@ -133,9 +158,10 @@
   }
   if (P.has('auto')) {
     const idx = (+P.get('nivel') || 1) - 1, modo = P.get('auto') === 'mal' ? 'mal' : 'bien';
+    if (P.get('mejoras') !== 'no') G.campana.progresoEsperado(idx);
     const n = simularNivel(idx, modo, 400);
     const vivos = G.tropa.vivas().length;
-    salida(`nivel ${idx + 1} (${n.datos.nombre}) · bot ${modo}: ${n.fin || 'sin terminar'} en ${n.tiempo.toFixed(1)} s · puntos ${n.puntos} · bajas enemigas ${n.bajas} · tropa viva ${vivos}/8 · combo máx ${n.maxCombo}${G.enem.jefe() ? ' · vida del jefe ' + G.enem.jefe().hp : ''}`);
+    salida(`nivel ${idx + 1} (${n.datos.nombre}) · bot ${modo}: ${n.fin || 'sin terminar'} en ${n.tiempo.toFixed(1)} s · puntos ${n.puntos} · bajas enemigas ${n.bajas} · tropa viva ${vivos}/${G.tropa.unidades.length} · combo máx ${n.maxCombo}${G.enem.jefe() ? ' · vida del jefe ' + G.enem.jefe().hp : ''}`);
     return;
   }
   if (P.has('bench')) {
@@ -148,10 +174,22 @@
     salida(`BENCH ${n} frames: ${((performance.now() - t0) / n).toFixed(3)} ms/frame (nivel 3, lluvia, noche)`);
     return;
   }
+  if (P.get('prueba') === 'musica') {
+    G.audio.renderizar(P.get('cancion') || 'pradera', +P.get('seg') || 36, P.has('fiebre')).then((r) => {
+      salida(JSON.stringify({ pico: r.pico, rms: r.rms.map((x) => +x.toFixed(3)), wav: r.wav }));
+    }).catch((e) => salida('ERROR ' + e.message));
+    return;
+  }
+  if (P.has('capa')) {                      // depuración: una capa de fondo sola
+    const [b, i] = P.get('capa').split(':'); const c = G.escena._capas(b)[+i].c;
+    G.ctx.fillStyle = '#FF00FF'; G.ctx.fillRect(0, 0, W, H); G.ctx.drawImage(c, -(+P.get('x') || 0), 0);
+    salida(G.buf.toDataURL()); return;
+  }
   if (P.has('shot')) {
     const pant = P.get('pantalla') || 'juego', sim = +P.get('sim') || 3, idx = (+P.get('nivel') || 1) - 1;
     if (pant === 'titulo') { G.cambiarEstado('titulo'); for (let i = 0; i < sim * 60; i++) G.paso(1 / 60); }
-    else if (pant === 'mapa') { G.prog.datos.desbloqueado = +P.get('abiertos') || 3; G.prog.datos.records = { 1: 3120, 2: 2890 }; G.cambiarEstado('mapa'); for (let i = 0; i < 30; i++) G.paso(1 / 60); }
+    else if (pant === 'campamento') { G.prog.datos.monedas = 230; G.cambiarEstado('campamento'); for (let i = 0; i < sim * 60; i++) G.paso(1 / 60); }
+    else if (pant === 'mapa') { G.prog.datos.desbloqueado = +P.get('abiertos') || 4; G.prog.datos.records = { 1: 3120, 2: 2890, 3: 4100 }; G.cambiarEstado('campamento'); G.cambiarEstado('mapa'); for (let i = 0; i < 30; i++) G.paso(1 / 60); }
     else {
       simularNivel(idx, P.get('bot') || 'bien', sim);
       if (pant === 'pausa') G.cambiarEstado('pausa');
@@ -159,7 +197,8 @@
       G.paso(1 / 60);
     }
     if (P.has('tactil')) { G.entrada.tactil = true; G.paso(1 / 60); }
-    salida(G.buf.toDataURL());
+    presentar();
+    salida(pantalla.toDataURL());
     return;
   }
 

@@ -60,6 +60,49 @@
     });
   }
 
+  // ---- Accesorios con carisma
+  // Bufanda: cadena de 5 puntos (verlet) anclada al cuello, en coordenadas de mundo; el viento y la
+  // velocidad la hacen ondear hacia atrás.
+  function bufanda(e, nx, ny, col, s, vx, dt) {
+    const ax = nx + G.camX, n = 6, L = 2.2 * s;
+    if (!e.buf) e.buf = Array.from({ length: n }, (_, i) => ({ x: ax - e.dir * i * L, y: ny + i, px: ax - e.dir * i * L, py: ny + i }));
+    const viento = (G.escena ? G.escena.viento : 0.4) * 22, h = Math.min(0.05, dt);
+    const b = e.buf;
+    b[0].x = ax; b[0].y = ny; b[0].px = ax; b[0].py = ny;
+    for (let i = 1; i < n; i++) {
+      const p = b[i], vxp = (p.x - p.px) * 0.9, vyp = (p.y - p.py) * 0.9;
+      p.px = p.x; p.py = p.y;
+      p.x += vxp - viento * h * h * 12 + Math.sin(G.t * 7 + i) * 0.04;
+      p.y += vyp + 30 * h * h * 12;
+    }
+    for (let it = 0; it < 3; it++) for (let i = 1; i < n; i++) {
+      const a = b[i - 1], p = b[i], dx = p.x - a.x, dy = p.y - a.y, d = Math.hypot(dx, dy) || 0.001;
+      p.x = a.x + dx / d * L; p.y = a.y + dy / d * L;
+    }
+    for (let i = 1; i < n; i++) D.linea(b[i - 1].x - G.camX, b[i - 1].y, b[i].x - G.camX, b[i].y, i === n - 1 ? U.shade(col, 0.8) : col, Math.max(1, Math.round(s * (i < 3 ? 2 : 1))));
+  }
+  // Tocados por clase; g = { tipo, col (metal/tela), pluma }
+  function gorro(g, cx, cy, d, s, col) {
+    const R = (x, y, w, h, c) => D.rect(d > 0 ? cx + x * s : cx - (x + w - 1) * s - (s - 1), cy + y * s, w * s, h * s, c);
+    if (g.tipo === 'yelmo') {                       // escudero: casco redondo con nasal y cresta
+      R(-3, -4, 7, 2, g.col); R(-4, -2, 9, 2, g.col); R(-4, 0, 1, 3, g.col); R(2, 0, 1, 3, g.col);
+      R(-1, -5, 3, 1, g.pluma || g.col); if (g.pluma) R(-2, -6, 5, 1, g.pluma);
+    } else if (g.tipo === 'punta') {                // lancero: casco cónico con pluma que se mece
+      R(0, -7, 1, 2, g.col); R(-1, -5, 3, 1, g.col); R(-2, -4, 5, 1, g.col); R(-3, -3, 7, 2, g.col);
+      if (g.pluma) { const m = Math.round(Math.sin(G.t * 6 + cx) * 0.8); R(-2 + m, -9, 1, 3, g.pluma); R(-3 + m, -10, 1, 2, g.pluma); }
+    } else if (g.tipo === 'capucha') {              // arquero: capucha con pico hacia atrás
+      R(-3, -4, 7, 2, g.col); R(-4, -2, 2, 5, g.col); R(-5, -3, 1, 3, g.col); R(-6, -1, 1, 2, g.col);
+      if (g.pluma) R(2, -6, 1, 3, g.pluma);
+    } else if (g.tipo === 'sombrero') {             // abanderado: sombrero de ala ancha con pluma
+      R(-6, -3, 13, 1, g.col); R(-3, -6, 7, 3, g.col); R(-3, -4, 7, 1, g.cinta || '#B8322A');
+      R(3, -9, 1, 4, g.pluma || '#F2C14E'); R(4, -10, 1, 2, g.pluma || '#F2C14E');
+    } else if (g.tipo === 'mascara') {              // enemigos: máscara de hueso con rendijas y cuernos
+      R(-1, -3, 5, 6, g.col); R(0, -1, 1, 1, '#1A0A0A'); R(2, -1, 1, 1, '#1A0A0A'); R(1, 2, 1, 1, '#1A0A0A');
+      R(-3, -6, 1, 3, g.cuerno || g.col); R(-4, -8, 1, 2, g.cuerno || g.col); R(3, -6, 1, 2, g.cuerno || g.col); R(4, -8, 1, 2, g.cuerno || g.col);
+      if (g.corona) { R(-3, -5, 7, 1, g.corona); R(-3, -7, 1, 2, g.corona); R(0, -8, 1, 3, g.corona); R(3, -7, 1, 2, g.corona); }
+    }
+  }
+
   const E = G.esq = {
     crear(o = {}) {
       return Object.assign({ escala: 1, color: '#15131A', torso: 9, retraso: 0, oido: 0.6, dir: 1, pies: null, pFase: 0, marcha: false }, o);
@@ -85,10 +128,12 @@
       const shx = hx + dir * incl, shy = hy - e.torso * s + cab * 0.8 * s;
       D.linea(hx, hy, shx, shy, col, gr);
       D.linea(hx + dir * gr, hy - gr, shx + dir * gr, shy + gr, col, gr);
-      const cx = Math.round(shx + dir * (incl * 0.3 - mira * s)), cy = Math.round(shy - 4 * s - mira * s + cab * 0.5 * s);
-      const filas = [3, 5, 5, 5, 3];
-      filas.forEach((w, i) => D.rect(cx - Math.floor(w * s / 2), cy + (i - 2) * s, w * s, s, col));
-      if (e.cuernos) { D.rect(cx - 3 * s, cy - 4 * s, s, 2 * s, e.cuernos); D.rect(cx + 2 * s, cy - 4 * s, s, 2 * s, e.cuernos); }
+      const cx = Math.round(shx + dir * (incl * 0.3 - mira * s)), cy = Math.round(shy - 5 * s - mira * s + cab * 0.5 * s);
+      // cabeza redonda de 7 px (proporción chibi: más carisma)
+      [3, 5, 7, 7, 7, 5, 3].forEach((w, i) => D.rect(cx - Math.floor(w * s / 2), cy + (i - 3) * s, w * s, s, col));
+      if (pose.bufanda) bufanda(e, shx, shy + s, pose.bufanda, s, pose.vx || 0, pose.dt || G.dt);
+      if (pose.gorro) gorro(pose.gorro, cx, cy, dir, s, col);
+      else if (e.cuernos) { D.rect(cx - 4 * s, cy - 5 * s, s, 3 * s, e.cuernos); D.rect(cx + 3 * s, cy - 5 * s, s, 3 * s, e.cuernos); }
       // Brazos: objetivos de mano en coordenadas locales respecto al hombro
       const at = pose.atras || { x: -1, y: 8 }, fr = pose.frente || { x: 4, y: 5 };
       const ra = miembro(shx, shy + s, shx + dir * at.x * s, shy + s + at.y * s, BR, AN, dir, col, gr);

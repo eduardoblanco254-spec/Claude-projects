@@ -8,7 +8,8 @@
 
   C.danar = (obj, cantidad, fuente) => {
     if (!obj.vivo) return 0;
-    const m = obj.bando === 'tropa' ? G.tropa.mult(obj) : 1;
+    let m = obj.bando === 'tropa' ? G.tropa.mult(obj) : 1;
+    if (obj.tipo === 'escudado' && fuente && fuente.tipo !== 'flecha' && !G.tropa.ej.cargado) m = 0.25;
     const d = Math.round(cantidad * m);
     if (d <= 0) {
       G.audio.sfx('escudo');
@@ -32,8 +33,13 @@
       C.part.push({ x: obj.x + (Math.random() - 0.5) * (obj.tipo === 'jefe' ? 30 : 8), y: G.GY - Math.random() * alto,
         vx: (Math.random() - 0.5) * 40, vy: -20 - Math.random() * 50, vida: 0.8 + Math.random() * 0.8, col, suelo: true });
     }
+    if (obj.bando === 'enem') C.monedas(obj.x, G.enem.TIPOS[obj.tipo].monedas || 0);
     G.emit('muere', obj);
   }
+  // Monedas: saltan del enemigo y vuelan al marcador
+  C.monedas = (x, n) => {
+    for (let k = 0; k < Math.min(n, 12); k++) C.part.push({ x, y: G.GY - 14, vx: (Math.random() - 0.3) * 50, vy: -60 - Math.random() * 40, vida: 1.4, col: '#F2C14E', moneda: Math.ceil(n / Math.min(n, 12)), t: 0 });
+  };
   C.texto = (s, x, y, col) => C.textos.push({ s, x, y, col, vida: 0.8 });
   C.polvo = (x, n) => { for (let k = 0; k < n; k++) C.part.push({ x: x + (Math.random() - 0.5) * 40, y: G.GY - 1, vx: (Math.random() - 0.5) * 50, vy: -10 - Math.random() * 30, vida: 0.6, col: '#8A7A60' }); };
 
@@ -74,6 +80,12 @@
     }
     C.proy = C.proy.filter((p) => p.vivo);
     for (const q of C.part) {
+      if (q.moneda) {                       // rebota y luego vuela al contador de monedas (arriba a la derecha)
+        q.t += dt;
+        if (q.t > 0.55) { const tx = G.camX + G.W - 60, ty = 20; q.x += (tx - q.x) * Math.min(1, dt * 7); q.y += (ty - q.y) * Math.min(1, dt * 7);
+          if (Math.abs(q.x - tx) < 6 && Math.abs(q.y - ty) < 6) { q.vida = 0; if (G.nivel && !G.nivel.fin) G.nivel.monedas += q.moneda; G.audio.sfx('moneda', 0.5); }
+          continue; }
+      }
       q.vida -= dt; q.vy += GRAV * dt; q.x += q.vx * dt; q.y += q.vy * dt;
       if (q.y > G.GY - 1) { q.y = G.GY - 1; q.vx *= 0.5; q.vy = 0; }
     }
@@ -94,7 +106,7 @@
         D.rect(x - 3, G.GY - 3, 7, 3, '#8A7A60'); D.rect(x - 1, G.GY - 5, 3, 2, '#A89878');
       }
     }
-    for (const q of C.part) { G.ctx.globalAlpha = U.clamp(q.vida * 2, 0, 1); D.rect(q.x - G.camX, q.y, 1, 1, q.col); }
+    for (const q of C.part) { G.ctx.globalAlpha = q.moneda ? 1 : U.clamp(q.vida * 2, 0, 1); if (q.moneda) { D.rect(q.x - G.camX - 1, q.y - 1, 3, 3, '#F2C14E'); D.rect(q.x - G.camX, q.y - 1, 1, 1, '#FFF1A0'); } else D.rect(q.x - G.camX, q.y, 1, 1, q.col); }
     G.ctx.globalAlpha = 1;
   };
   C.dibujarTextos = () => {

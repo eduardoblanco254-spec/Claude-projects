@@ -9,8 +9,27 @@
     escudo:  { hp: 75, alcance: 13, dano: 5 },
     arco:    { hp: 30, alcance: 165, dano: 6 },
   };
-  // Formación (desplazamiento respecto al abanderado): escudos delante, arqueros detrás.
-  const FORMACION = [['escudo', 38], ['escudo', 29], ['lanza', 20], ['lanza', 11], ['bandera', 0], ['lanza', -9], ['arco', -19], ['arco', -29]];
+  // Formación: escudos delante, luego lanzas, el abanderado y los arqueros detrás (según lo reclutado)
+  function formacion() {
+    const d = G.campana.datos().tropa, orden = [];
+    for (let i = 0; i < d.escudo; i++) orden.push('escudo');
+    for (let i = 0; i < d.lanza; i++) orden.push(i < Math.ceil(d.lanza / 2) ? 'lanza' : 'lanza2');
+    orden.push('bandera');
+    for (let i = 0; i < d.arco; i++) orden.push('arco');
+    // lanzas repartidas delante y detrás del abanderado
+    const delante = orden.filter((t) => t === 'escudo' || t === 'lanza'), detras = orden.filter((t) => t === 'lanza2' || t === 'arco');
+    const res = [];
+    delante.forEach((t, i) => res.push([t, (delante.length - i) * 12]));
+    res.push(['bandera', 0]);
+    detras.sort((a, b2) => (a === 'lanza2' ? -1 : 1) - (b2 === 'lanza2' ? -1 : 1)).forEach((t, i) => res.push([t === 'lanza2' ? 'lanza' : t, -(i + 1) * 12]));
+    return res;
+  }
+  const METALES = ['#62646F', '#62646F', '#A06C36', '#B8BCC6', '#E8B84A', '#F2D060'];
+  function equipo(tipo, nivel) {
+    const col = METALES[nivel], pluma = nivel >= 3 ? (nivel >= 5 ? '#F2D060' : '#D8402A') : null;
+    const g = { lanza: 'punta', escudo: 'yelmo', arco: 'capucha', bandera: 'sombrero' }[tipo];
+    return { tipo: g, col: tipo === 'arco' ? (nivel >= 3 ? '#4E7A44' : '#3E5A3A') : tipo === 'bandera' ? '#5A3A2A' : col, pluma, cinta: col };
+  }
 
   const T = G.tropa = { unidades: [], ej: { x: 60, vel: 0, cargado: false } };
 
@@ -24,10 +43,12 @@
 
   T.reiniciar = (x = 60) => {
     T.ej = { x, vel: 0, cargado: false };
-    T.unidades = FORMACION.map(([tipo, off], i) => {
-      const d = TIPOS[tipo];
+    const f = formacion(); T.frenteOff = Math.max(...f.map((u) => u[1]));
+    T.unidades = f.map(([tipo, off], i) => {
+      const d = TIPOS[tipo], st = G.campana.stats(tipo), hp = Math.round(d.hp * st.vida);
       return {
-        i, tipo, off, x: x + off, vx: 0, hp: d.hp, max: d.hp, vivo: true, bando: 'tropa', ancho: 6,
+        i, tipo, off, x: x + off, vx: 0, hp, max: hp, vivo: true, bando: 'tropa', ancho: 6, dano: d.dano * st.dano,
+        gorro: equipo(tipo, st.nivel), bufCol: tipo === 'bandera' ? '#F2C14E' : st.nivel >= 5 ? '#E8B84A' : '#B8322A', celebra: 0,
         esq: G.esq.crear({ retraso: U.hash(i, 11) * 0.07, torso: 8 + Math.floor(U.hash(i, 12) * 3), oido: 0.4 + 0.6 * U.hash(i, 13) }),
         brio: 0.75 + 0.5 * U.hash(i, 15), vagar: U.hash(i, 14) * 100, fase: U.hash(i, 3) * 6,
         gesto: null, proxGesto: 1 + U.hash(i, 16) * 4, salto: 0, herido: 0, verVida: 0,
@@ -35,6 +56,7 @@
       };
     });
   };
+  T.frenteOff = 40;
   T.vivas = () => T.unidades.filter((u) => u.vivo);
   T.frente = () => { let m = -1e9; for (const u of T.unidades) if (u.vivo) m = Math.max(m, u.x); return m; };
   T.abanderado = () => T.unidades.find((u) => u.tipo === 'bandera');
@@ -51,6 +73,7 @@
 
   G.on('orden', (o) => { if (o.orden === 'cargar') T.ej.cargado = true; });
   G.on('fin_orden', (o) => { if (o.orden === 'atacar') T.ej.cargado = false; });
+  G.on('muere', (o) => { if (o.bando === 'enem') for (const u of T.unidades) if (u.vivo && Math.abs(u.x - o.x) < 110) u.celebra = 0.9 + Math.random() * 0.3; });
   G.on('golpe', (g) => { if (g.juicio === 'perfecto' || g.juicio === 'bien') for (const u of T.unidades) u.salto = 0.22; });
 
   function enemigoMasCercano(u, rango) {
@@ -69,7 +92,7 @@
     let vel = 0;
     if (o && o.orden === 'marchar') {
       const bloqueo = G.enem.bloqueo();                     // primer enemigo/empalizada vivo delante
-      const frente = ej.x + 40;
+      const frente = ej.x + T.frenteOff;
       vel = bloqueo === null || bloqueo - frente > 10 ? VEL : 0;
       if (niv && ej.x > niv.datos.largo - 70) vel = 0;
     } else if (o && o.orden === 'retroceder') {
@@ -99,9 +122,9 @@
           u.ultGolpe = b;
           const pot = o.potencia * (fiebre ? 1.5 : 1) * (ej.cargado ? 2 : 1);
           if (u.tipo === 'arco') {
-            if (e && (b - o.pulso0) % 2 === 0) G.combate.flecha(u.x + 6, G.GY - 22, e, 'tropa', d.dano * pot);
+            if (e && (b - o.pulso0) % 2 === 0) G.combate.flecha(u.x + 6, G.GY - 22, e, 'tropa', u.dano * pot);
           } else if (e && Math.abs(e.x - e.ancho / 2 - u.x) <= d.alcance + 3) {
-            G.combate.danar(e, d.dano * pot, u);
+            G.combate.danar(e, u.dano * pot, u);
           }
         }
       }
@@ -114,7 +137,7 @@
       const e = enemigoMasCercano(u, 12);
       if (e && vx > 0 && e.x - e.ancho / 2 - u.x < 6) vx = 0;
       u.vx = vx; u.x += vx * dt;
-      u.salto = Math.max(0, u.salto - dt); u.herido = Math.max(0, u.herido - dt); u.verVida = Math.max(0, u.verVida - dt);
+      u.celebra = Math.max(0, u.celebra - dt); u.salto = Math.max(0, u.salto - dt); u.herido = Math.max(0, u.herido - dt); u.verVida = Math.max(0, u.verVida - dt);
       // Gestos en reposo
       u.proxGesto -= dt;
       if (!u.gesto && u.proxGesto <= 0 && !o && Math.abs(vx) < 1) {
@@ -141,16 +164,24 @@
     const agache = (defiende ? 2 : 0) + (carga ? 2 + Math.sin(G.t * 30) * 0.5 : 0) + (u.esq.marcha ? 0 : respira * 0.6);
     const bal = Math.sin(2 * Math.PI * (u.esq.pFase || 0));
     const vx = u.vx;
+    const fiesta = u.celebra > 0 || (G.nivel && G.nivel.fin === 'victoria');
+    const baile = G.ritmo.fiebre && !ataca && !defiende && !u.esq.marcha;
     const pose = {
       hipW, vx, hop, agache, incl: (u.esq.marcha ? 1 : 0) + lunge * 2 + (defiende ? 1 : 0) + cab * 0.6, cab, mira: gt === 'mirar' ? ges : 0,
       reposo: ataca && u.tipo !== 'arco' ? [-4, 5] : defiende ? [-4, 4] : [-2, 3], dt,
       atras: { x: -1 - (u.esq.marcha ? 3 * bal : 0) - cab * 1.5 * mel.alto, y: 8 - cab * 2 },
       frente: { x: 4, y: 5 }, color: u.herido > 0 ? '#E8E4DA' : null,
+      gorro: u.gorro, bufanda: u.bufCol,
     };
+    if (u.herido > 0) pose.incl -= 3;                                   // se encoge hacia atrás
+    let brazosArriba = 0;
+    if (fiesta) { brazosArriba = 1; pose.hop = Math.max(pose.hop, Math.abs(Math.sin(G.t * 9 + u.fase)) * 3); }
+    else if (baile) { brazosArriba = Math.max(0, Math.sin(2 * Math.PI * p)); pose.hop = Math.max(pose.hop, (1 - p) * 1.5); }
+    if (brazosArriba > 0) pose.atras = { x: -2, y: 8 - brazosArriba * 16 };
     let luz = null;
     if (u.tipo === 'lanza') {
       const golpea = gt === 'golpear' ? Math.max(0, Math.sin(Math.PI * 2 * u.gesto.a / BEAT)) * 2 : 0;
-      pose.frente = { x: 4 + th, y: 5 - (ataca ? 1 : 0) + golpea - (defiende ? 2 : 0) };
+      pose.frente = { x: 4 + th, y: 5 - (ataca ? 1 : 0) + golpea - (defiende ? 2 : 0) - brazosArriba * 9 };
       const r = G.esq.dibujar(u.esq, pose);
       const ang = ataca ? 0 : defiende ? -Math.PI / 4 : -Math.PI / 2 - 0.15 * (u.esq.marcha ? 1 : 0);
       const ux = Math.cos(ang) * r.dir, uy = Math.sin(ang), m = r.mano;
@@ -181,7 +212,7 @@
       D.linea(m.x, m.y - 6, cx, m.y, '#8A8F99'); D.linea(cx, m.y, m.x, m.y + 6, '#8A8F99');
       if (tensa > 0.05) D.linea(cx, m.y, m.x + d * 5, m.y, r.col);
     } else if (u.tipo === 'bandera') {
-      pose.frente = { x: 4, y: 4 - cab };
+      pose.frente = { x: 4, y: 4 - cab - brazosArriba * 6 };
       const r = G.esq.dibujar(u.esq, pose);
       const bx = Math.round(r.mano.x), top = Math.round(r.mano.y) - 22;
       D.linea(bx, Math.min(G.GY - 1, r.mano.y + 8), bx, top, r.col);

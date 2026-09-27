@@ -9,7 +9,7 @@ CHROME = next((p for p in ["/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
          (glob.glob("/opt/pw-browsers/chromium-*/chrome-linux/chrome") or [None])[0]
 
 def volcar(q, t=240):
-    r = subprocess.run([CHROME, "--headless=new", "--no-sandbox", "--disable-gpu", "--allow-file-access-from-files",
+    r = subprocess.run([CHROME, "--headless=new", "--no-sandbox", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--allow-file-access-from-files",
                         "--enable-logging=stderr", "--v=0", f"--user-data-dir={tempfile.mkdtemp()}",
                         "--virtual-time-budget=60000", "--dump-dom", (RAIZ / "index.html").as_uri() + "?" + q],
                        capture_output=True, text=True, timeout=t, encoding="utf-8", errors="replace")

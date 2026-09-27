@@ -1,33 +1,29 @@
-// 50_niveles.js — datos de los niveles y su desarrollo: inicio, puntuación, victoria y derrota.
+// 50_niveles.js — desarrollo de cada fase de la campaña (inicio, puntos, monedas, victoria, derrota),
+// el campamento y la cámara.
 (function (G) {
-  const e = (tipo, x) => ({ tipo, x });
-  const NIVELES = [
-    { nombre: 'El vado', sub: 'Aprende a marchar y atacar', fase: 'dia', clima: 'despejado', largo: 1400, meta: 1340, tema: 1,
-      enemigos: [e('bruto', 520), e('bruto', 565), e('empalizada', 800), e('bruto', 1010), e('lancero', 1060)], fogatas: [] },
-    { nombre: 'Bosque de niebla', sub: 'Cuidado con los arqueros', fase: 'tarde', clima: 'niebla', largo: 1800, meta: 1740, tema: 2,
-      enemigos: [e('arquero', 460), e('bruto', 500), e('lancero', 720), e('empalizada', 920), e('arquero', 955), e('bruto', 1160),
-        e('bruto', 1200), e('lancero', 1420), e('arquero', 1470)], fogatas: [380, 1090] },
-    { nombre: 'Noche en el río', sub: 'Defiende cuando apunten', fase: 'noche', clima: 'lluvia', largo: 2000, meta: 1940, tema: 3,
-      enemigos: [e('bruto', 420), e('arquero', 470), e('lancero', 700), e('lancero', 745), e('empalizada', 960), e('arquero', 995),
-        e('arquero', 1030), e('bruto', 1260), e('bruto', 1300), e('lancero', 1520), e('arquero', 1570), e('bruto', 1610)],
-      fogatas: [150, 620, 1150, 1720] },
-    { nombre: 'El gigante del río', sub: 'Salta su onda y defiende su garrote', fase: 'noche', clima: 'tormenta', largo: 900, meta: null, tema: 4, jefe: true,
-      enemigos: [e('jefe', 620)], fogatas: [120, 460, 820] },
-  ];
-
-  const N = G.nivel = null;
-  G.NIVELES = NIVELES;
+  G.NIVELES = G.campana.FASES;
 
   G.iniciarNivel = (idx) => {
-    const d = NIVELES[idx];
-    G.nivel = { idx, datos: d, puntos: 0, bajas: 0, tiempo: 0, fin: null, maxCombo: 0 };
+    const d = G.campana.FASES[idx];
+    G.nivel = { idx, datos: d, puntos: 0, bajas: 0, tiempo: 0, fin: null, maxCombo: 0, monedas: 0, premio: 0 };
     G.escena.configurar(d);
     G.tropa.reiniciar(60);
-    G.enem.reiniciar(d.enemigos);
+    G.enem.reiniciar(d.enemigos, G.campana.dificultad(idx));
     G.combate.reiniciar();
     G.ritmo.reiniciar();
-    G.audio.tema(d.tema);
+    G.audio.tema(d.cancion);
     G.camX = 0;
+  };
+
+  // Campamento: tiendas, herrería, maniquí, carro y la tropa descansando junto al fuego
+  G.iniciarCampamento = () => {
+    G.escena.configurar({ bioma: 'campamento', largo: 1000, fogatas: [300], meta: null,
+      props: [{ tipo: 'tienda', x: 170, col: '#C8A870' }, { tipo: 'tienda', x: 214, col: '#A88A5A', bandera: '#F2C14E' }, { tipo: 'estandarte', x: 250 },
+        { tipo: 'yunque', x: 372 }, { tipo: 'maniqui', x: 420 }, { tipo: 'carro', x: 470 }, { tipo: 'tienda', x: 520, col: '#B89868' }] });
+    G.tropa.reiniciar(330);
+    G.enem.reiniciar([]); G.combate.reiniciar(); G.ritmo.reiniciar();
+    G.camX = 150; G.nivel = null;
+    G.audio.tema('campamento'); G.audio.fiebre(false);
   };
 
   G.on('muere', (o) => {
@@ -41,12 +37,15 @@
     const n = G.nivel; if (!n || n.fin) return;
     n.tiempo += dt;
     const ab = G.tropa.abanderado();
-    if (!ab.vivo || G.tropa.vivas().length === 0) { n.fin = 'derrota'; G.emit('fin_nivel', n); return; }
+    if (!ab.vivo || G.tropa.vivas().length === 0) {
+      n.fin = 'derrota'; G.campana.ganar(n.monedas); G.emit('fin_nivel', n); return;
+    }
     const d = n.datos;
-    const gana = d.jefe ? !G.enem.jefe().vivo : G.tropa.ej.x + 40 >= d.meta;
+    const gana = d.jefe ? !G.enem.jefe().vivo : G.tropa.ej.x + G.tropa.frenteOff >= d.meta;
     if (gana) {
       n.puntos += G.tropa.vivas().length * 150 + Math.max(0, 600 - Math.floor(n.tiempo) * 3);
-      n.fin = 'victoria'; G.emit('fin_nivel', n);
+      n.premio = d.recompensa;
+      n.fin = 'victoria'; G.campana.ganar(n.monedas + n.premio); G.emit('fin_nivel', n);
     }
   };
 

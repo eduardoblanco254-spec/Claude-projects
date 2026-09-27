@@ -284,145 +284,360 @@ window.G = (() => {
 </script>
 <script>
 // ---- 10_audio.js
-// 10_audio.js — música y sonidos sintetizados con Web Audio (sin archivos).
-// El reloj del audio es el reloj del juego: G.t = ac.currentTime - desfase. Así notas, pasos y golpes
-// nunca se separan. Las notas se programan con 0.15 s de margen (planificador sin cortes).
+// 10_audio.js — motor musical sintetizado (sin archivos) y efectos de sonido.
+// Instrumentos: melodía (sierras desafinadas con filtro, flauta o cuadrada), pad de acordes, arpegio,
+// bajo con sub-grave y batería (bombo, caja, charles, toms). Bus de efectos con reverberación y eco,
+// y compresor en la salida. Canciones compuestas en grados de la escala con acordes por compás.
+// El reloj del audio es el reloj del juego: G.t = ac.currentTime - desfase (120 ppm, pulso 0.5 s).
 (function (G) {
-  const U = G.u, BEAT = G.BEAT, CORCHEA = BEAT / 2;
-  const N = { G2: 98, A2: 110, C3: 130.8, D3: 146.8, E3: 164.8, G3: 196, A3: 220, C4: 261.6, D4: 293.7, E4: 329.6,
-    G4: 392, A4: 440, C5: 523.3, D5: 587.3, E5: 659.3, G5: 784, A5: 880 };
-  // Temas: melodía en corcheas (32 = 4 compases) y bajo por pulso (16). null = silencio.
-  const _ = null;
-  const TEMAS = [
-    { mel: ['E4', _, _, 'G4', 'A4', _, _, _, 'G4', _, 'E4', _, 'D4', _, _, _, 'E4', _, _, 'G4', 'A4', _, 'C5', _, 'A4', _, _, _, _, _, _, _],
-      bajo: ['A2', _, 'E3', _, 'C3', _, 'G2', _, 'A2', _, 'E3', _, 'C3', _, 'E3', _], vol: 0.05 },
-    { mel: ['A4', _, 'C5', 'A4', 'G4', _, 'E4', _, 'D4', 'E4', 'G4', _, 'A4', _, _, _, 'A4', _, 'C5', 'D5', 'E5', _, 'D5', 'C5', 'A4', _, 'G4', 'E4', 'A4', _, _, _],
-      bajo: ['A2', 'A2', 'E3', 'A2', 'C3', 'C3', 'G3', 'E3', 'A2', 'A2', 'E3', 'A2', 'D3', 'D3', 'E3', 'E3'], vol: 0.065 },
-    { mel: ['E5', _, 'D5', _, 'C5', _, 'A4', _, 'C5', _, 'D5', 'E5', 'D5', _, _, _, 'G4', _, 'A4', _, 'C5', _, 'D5', _, 'C5', 'A4', 'G4', _, 'A4', _, _, _],
-      bajo: ['A2', _, 'A2', 'E3', 'G2', _, 'G2', 'D3', 'C3', _, 'C3', 'G3', 'E3', _, 'E3', 'A2'], vol: 0.06 },
-    { mel: ['A4', 'A4', _, 'C5', _, 'A4', 'G4', _, 'E4', _, 'G4', 'A4', _, _, 'E4', _, 'D4', 'D4', _, 'E4', _, 'G4', 'A4', _, 'C5', _, 'A4', _, 'E4', _, _, _],
-      bajo: ['A2', 'A2', 'A2', 'G2', 'E3', 'E3', 'D3', 'C3', 'A2', 'A2', 'A2', 'G2', 'E3', 'E3', 'E3', 'E3'], vol: 0.065 },
-    { mel: ['A4', _, 'A4', 'C5', 'E5', _, 'D5', 'C5', 'A4', _, 'A4', 'C5', 'D5', _, 'E5', _, 'G5', _, 'E5', 'D5', 'C5', _, 'D5', 'E5', 'A4', _, 'C5', _, 'A4', _, _, _],
-      bajo: ['A2', 'E3', 'A2', 'E3', 'G2', 'D3', 'G2', 'D3', 'C3', 'G3', 'C3', 'G3', 'E3', 'E3', 'E3', 'E3'], vol: 0.07 },
-  ];
-  // Contramelodía de fiebre: arpegio en corcheas una octava arriba.
-  const FIEBRE = ['A5', 'E5', 'C5', 'E5', 'G5', 'E5', 'D5', 'E5'];
-  const CANTOS = {
-    marchar: ['E5', 'E5', 'E5', 'A4'], atacar: ['A4', 'A4', 'E5', 'A4'], defender: ['C5', 'C5', 'E5', 'A4'],
-    retroceder: ['A4', 'E5', 'A4', 'E5'], cargar: ['A4', 'A4', 'G5', 'G5'],
+  const U = G.u, BEAT = G.BEAT, SEMI = BEAT / 4, COMPAS = 16;   // semicorcheas; 16 por compás (2 s)
+  const ESCALAS = { eolio: [0, 2, 3, 5, 7, 8, 10], jonico: [0, 2, 4, 5, 7, 9, 11], dorico: [0, 2, 3, 5, 7, 9, 10],
+    mixo: [0, 2, 4, 5, 7, 9, 10], armonica: [0, 2, 3, 5, 7, 8, 11] };
+  const BATERIAS = {
+    suave:   { k: 'x.......x.......', s: '................', h: '..x...x...x...x.', t: '................' },
+    marcha:  { k: 'x...x...x...x...', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', t: '................' },
+    bosque:  { k: 'x.....x...x.....', s: '....x.......x...', h: '..x...x...x...x.', t: 'x.x.x.x.x.x.x.x.' },
+    noche:   { k: 'x.........x.....', s: '........x.......', h: 'x..x..x..x..x..x', t: '................' },
+    heroico: { k: 'x...x...x...x.x.', s: '....x.......x..x', h: 'xxxxxxxxxxxxxxxx', t: '................' },
+    jefe:    { k: 'x..xx...x..xx...', s: '....x.......x.x.', h: 'xxxxxxxxxxxxxxxx', t: '..............xx' },
   };
-  const TAMBOR = { PATA: [200, 0.13, 0.4, 'triangle'], PON: [128, 0.16, 0.45, 'triangle'], CHAKA: [0, 0.08, 0.35, 'ruido'], DON: [70, 0.3, 0.55, 'sine'] };
+  // Melodías: 8 compases por sección, 8 corcheas por compás. Grado 1–7, ' = octava arriba, , = abajo,
+  // . = silencio, - = mantener la nota anterior.
+  const CANCIONES = {
+    titulo: { raiz: 69, escala: 'eolio', lead: 'flauta', bajo: 'lento', bat: 'suave', vol: 0.8,
+      acA: [1, 6, 3, 7, 1, 6, 3, 7], acB: [4, 5, 1, 1, 4, 5, 6, 7],
+      A: ['5 - - 3 1 - 2 3', '4 - 3 - 1 - - .', '3 - 5 - 1\' - 7 5', '7 - 5 - 2 - . .', '5 - - 3 1 - 2 3', '4 - 6 - 5 - 4 3', '3 - 2 - 3 5 - .', '2 - 1 - 1 - - .'],
+      B: ['1\' - 7 - 6 - 5 -', '6 - 5 - 4 - 3 -', '3 - 1 - 3 5 1\' -', '7 - - 5 3 - - .', '1\' - 7 - 6 - 1\' -', '2\' - 1\' 7 5 - - .', '6 - - 5 4 3 2 3', '1 - - - . . . .'] },
+    campamento: { raiz: 60, escala: 'jonico', lead: 'flauta', bajo: 'pulso', bat: 'suave', vol: 0.85,
+      acA: [1, 6, 4, 5, 1, 6, 2, 5], acB: [4, 5, 3, 6, 4, 5, 1, 1],
+      A: ['3 - 5 - 1\' - 7 6', '6 - 5 - 3 - . .', '4 - 6 - 1\' - 6 4', '5 - - - 2 3 4 -', '3 - 5 - 1\' - 2\' 1\'', '6 - 1\' - 3\' - 2\' 1\'', '2\' - 1\' - 6 - 4 -', '5 - - - . . . .'],
+      B: ['4 - 6 - 1\' 6 4 -', '5 - 7 - 2\' - 7 -', '3 - 5 - 7 - 5 3', '6 - - - 1\' - 6 -', '4 - 6 - 1\' - 2\' -', '3\' - 2\' - 1\' - 7 -', '1\' - 5 - 3 - 5 -', '1 - - - . . . .'] },
+    pradera: { raiz: 62, escala: 'dorico', lead: 'sierra', bajo: 'ocho', bat: 'marcha', vol: 0.8,
+      acA: [1, 4, 1, 7, 1, 4, 3, 5], acB: [4, 5, 1, 1, 4, 5, 3, 5],
+      A: ['1\' . 1\' 7 1\' - 5 -', '4 . 6 - 5 4 2 -', '1 . 3 5 1\' - 7 1\'', '7 - 5 - 3 - . .', '1\' . 1\' 7 1\' - 5 -', '6 . 5 4 6 - 1\' -', '3\' - 2\' 1\' 7 - 5 -', '5 - - - . . 5 7'],
+      B: ['2\' - 1\' - 6 - 4 -', '3\' - 2\' - 1\' - 5 -', '1\' - 5 - 3 - 1 -', '2 3 4 5 6 7 1\' -', '2\' - 1\' - 6 - 4 6', '1\' - 3\' - 2\' 1\' 7 -', '6 - 5 - 3 - 1 -', '5 - 3 - 1 - - .'] },
+    bosque: { raiz: 64, escala: 'eolio', lead: 'cuadrada', bajo: 'pulso', bat: 'bosque', vol: 0.8,
+      acA: [1, 6, 3, 7, 1, 6, 4, 5], acB: [4, 5, 1, 1, 6, 7, 1, 1],
+      A: ['5 - 3 - 5 - 1\' 7', '6 - 5 - 3 - . .', '5 - 7 - 1\' - 2\' -', '2\' - 1\' 7 5 - . .', '5 - 3 - 5 - 1\' 7', '6 - 1\' - 3\' - 2\' 1\'', '1\' - 7 6 4 - 6 -', '7 - - - . . . .'],
+      B: ['4 - 6 - 1\' - 6 -', '5 - 7 - 2\' - 7 -', '1\' - 7 - 5 - 3 -', '5 - - 3 1 - . .', '6 - 1\' - 3\' - 1\' -', '7 - 2\' - 4\' - 2\' -', '3\' - 2\' - 1\' - 7 -', '1\' - - - . . . .'] },
+    noche: { raiz: 66, escala: 'eolio', lead: 'flauta', bajo: 'lento', bat: 'noche', vol: 0.8,
+      acA: [1, 6, 3, 7, 1, 6, 3, 7], acB: [4, 4, 1, 1, 6, 7, 5, 5],
+      A: ['1\' - - 7 5 - - .', '6 - - 5 3 - - .', '5 - 3 - 1 - 3 5', '7 - - - . . . .', '1\' - - 7 5 - - 3\'', '2\' - - 1\' 6 - - .', '5 - 6 - 7 - 1\' -', '7 - - - 5 - - .'],
+      B: ['4\' - - 3\' 1\' - - .', '6 - 1\' - 4\' - 3\' -', '3\' - - 2\' 1\' - - .', '5 - - - . . . .', '3\' - 1\' - 6 - 1\' -', '2\' - 7 - 5 - 7 -', '5 - 7 - 2\' - 1\' 7', '5 - - - . . . .'] },
+    montana: { raiz: 67, escala: 'mixo', lead: 'sierra', bajo: 'galope', bat: 'heroico', vol: 0.8,
+      acA: [1, 7, 4, 1, 1, 7, 4, 5], acB: [4, 5, 1, 1, 4, 7, 1, 1],
+      A: ['1\' - - 5 1\' - 2\' -', '3\' - 2\' - 1\' - 7 -', '6 - - 4 6 - 1\' -', '5 - - - . . 5 5', '1\' - - 5 1\' - 2\' -', '3\' - 4\' - 5\' - 3\' -', '4\' - 3\' - 1\' - 6 -', '5 - - - 2\' - 5 -'],
+      B: ['6 - 1\' - 4\' - 3\' -', '2\' - 5 - 7 - 2\' -', '3\' - - 2\' 1\' - 5 -', '1\' - - - . . . .', '4\' - 3\' - 1\' - 6 -', '7 - 1\' - 2\' - 4\' -', '5\' - 3\' - 1\' - 2\' -', '1\' - - - . . . .'] },
+    jefe: { raiz: 69, escala: 'armonica', lead: 'sierra', bajo: 'galope', bat: 'jefe', vol: 0.85,
+      acA: [1, 1, 4, 5, 1, 6, 4, 5], acB: [6, 6, 4, 4, 2, 2, 5, 5],
+      A: ['1\' 7 1\' 3\' 5\' - 3\' 1\'', '7 - 5 - 3 - 5 -', '6 5 6 1\' 4\' - 1\' 6', '7 - 2\' - 5\' - 4\' 3\'', '1\' 7 1\' 3\' 5\' - 6\' 5\'', '4\' - 3\' - 1\' - 3\' -', '2\' - 1\' - 6 - 4 -', '7 - - - 7\' - - .'],
+      B: ['1\' - 3\' - 1\' - 6 -', '3\' - 1\' - 6 - 3 -', '4 - 6 - 1\' - 4\' -', '3\' - 2\' - 1\' - 6 -', '2\' - 4\' - 6\' - 4\' -', '2\' - 1\' - 7 - 6 -', '7 - 2\' - 4\' - 7\' -', '5\' - - - 3\' - 7 -'] },
+  };
+  // Pre-procesa cada melodía en 16 compases × 8 corcheas: { grado, oct, dur } o null
+  function parsear(c) {
+    const notas = [];
+    let ultima = null;
+    for (const l of [...c.A, ...c.B]) {
+      for (const t of l.trim().split(/\s+/)) {
+        if (t === '.') { notas.push(null); ultima = null; }
+        else if (t === '-') { notas.push(null); if (ultima) ultima.dur++; }
+        else { ultima = { g: +t[0], oct: (t.match(/'/g) || []).length - (t.match(/,/g) || []).length, dur: 1 }; notas.push(ultima); }
+      }
+    }
+    c.mel = notas; c.acordes = [...c.acA, ...c.acB];
+  }
+  for (const k in CANCIONES) parsear(CANCIONES[k]);
+  const midiHz = (m) => 440 * Math.pow(2, (m - 69) / 12);
+  function grado(c, g, oct = 0) {
+    const e = ESCALAS[c.escala], i = g - 1;
+    return c.raiz + e[((i % 7) + 7) % 7] + 12 * Math.floor(i / 7) + 12 * oct;
+  }
+  const triada = (c, gr, oct = 0) => [grado(c, gr, oct), grado(c, gr + 2, oct), grado(c, gr + 4, oct)];
 
-  let ac = null, maestro = null, ruido = null, desfase = 0, prog = 0, pausado = false;
-  let musicaOn = true, tema = 0, fiebre = false, canto = null, metronomo = false;
+  const TAMBOR = { PATA: [196, 0.14, 0.45], PON: [131, 0.18, 0.5], CHAKA: [0, 0.09, 0.35], DON: [73, 0.32, 0.6] };
+  const CANTOS = { marchar: [5, 5, 5, 1], atacar: [1, 1, 5, 1], defender: [3, 3, 5, 1], retroceder: [1, 5, 1, 5], cargar: [1, 1, 7, 7] };
+
+  let ac = null, salida = null, rev = null, eco = null, ruido = null, desfase = 0, prog = 0, pausado = false;
+  let musicaOn = true, cancion = CANCIONES.titulo, nombreCancion = 'titulo', inicioCancion = 0, fiebre = false, canto = null, metronomo = false;
 
   function crearRuido() {
-    const b = ac.createBuffer(1, ac.sampleRate * 0.5, ac.sampleRate), d = b.getChannelData(0);
+    const b = ac.createBuffer(1, ac.sampleRate, ac.sampleRate), d = b.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     return b;
   }
-  function nota(f, cuando, dur, vol, tipo = 'triangle', caida = 1) {
-    if (!ac) return;
+  function crearReverb(seg = 2.2) {
+    const n = ac.sampleRate * seg, b = ac.createBuffer(2, n, ac.sampleRate);
+    for (let c = 0; c < 2; c++) { const d = b.getChannelData(c); for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 2.6); }
+    const cv = ac.createConvolver(); cv.buffer = b; return cv;
+  }
+  // Envolvente ADSR simple sobre un GainNode
+  function env(g, t0, a, d, s, r, dur, pico) {
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.linearRampToValueAtTime(pico, t0 + a);
+    g.gain.linearRampToValueAtTime(pico * s, t0 + a + d);
+    g.gain.setValueAtTime(pico * s, t0 + Math.max(a + d, dur));
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + Math.max(a + d, dur) + r);
+    return t0 + Math.max(a + d, dur) + r + 0.05;
+  }
+  function destino(g, envRev = 0, envEco = 0) {
+    g.connect(salida);
+    if (envRev) { const s = ac.createGain(); s.gain.value = envRev; g.connect(s); s.connect(rev); }
+    if (envEco) { const s = ac.createGain(); s.gain.value = envEco; g.connect(s); s.connect(eco.entrada); }
+  }
+  // ---- Instrumentos
+  const INST = {
+    sierra(f, t0, dur, v) {
+      const g = ac.createGain(), fl = ac.createBiquadFilter();
+      fl.type = 'lowpass'; fl.Q.value = 3;
+      fl.frequency.setValueAtTime(f * 1.5, t0); fl.frequency.linearRampToValueAtTime(f * 7, t0 + 0.03); fl.frequency.exponentialRampToValueAtTime(f * 2.5, t0 + 0.4);
+      const fin = env(g, t0, 0.01, 0.12, 0.7, 0.18, dur, v);
+      for (const det of [-7, 7]) {
+        const o = ac.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f; o.detune.value = det;
+        const vib = ac.createOscillator(), vg = ac.createGain(); vib.frequency.value = 5.5; vg.gain.setValueAtTime(0, t0); vg.gain.linearRampToValueAtTime(f * 0.006, t0 + 0.35);
+        vib.connect(vg).connect(o.frequency); vib.start(t0); vib.stop(fin);
+        o.connect(fl); o.start(t0); o.stop(fin);
+      }
+      fl.connect(g); destino(g, 0.28, 0.2);
+    },
+    flauta(f, t0, dur, v) {
+      const g = ac.createGain(), fin = env(g, t0, 0.04, 0.1, 0.8, 0.25, dur, v * 1.2);
+      const o = ac.createOscillator(); o.type = 'triangle'; o.frequency.value = f;
+      const o2 = ac.createOscillator(); o2.type = 'sine'; o2.frequency.value = f * 2; const g2 = ac.createGain(); g2.gain.value = 0.18;
+      const vib = ac.createOscillator(), vg = ac.createGain(); vib.frequency.value = 5; vg.gain.setValueAtTime(0, t0); vg.gain.linearRampToValueAtTime(f * 0.008, t0 + 0.3);
+      vib.connect(vg); vg.connect(o.frequency); vg.connect(o2.frequency);
+      const aire = ac.createBufferSource(), fa = ac.createBiquadFilter(), ga = ac.createGain();
+      aire.buffer = ruido; fa.type = 'bandpass'; fa.frequency.value = f * 2; fa.Q.value = 4; ga.gain.value = 0.05;
+      aire.connect(fa).connect(ga).connect(g);
+      o.connect(g); o2.connect(g2).connect(g);
+      [o, o2, vib, aire].forEach((n) => { n.start(t0); n.stop(fin); });
+      destino(g, 0.35, 0.22);
+    },
+    cuadrada(f, t0, dur, v) {
+      const g = ac.createGain(), fl = ac.createBiquadFilter(); fl.type = 'lowpass'; fl.frequency.value = f * 5;
+      const fin = env(g, t0, 0.005, 0.08, 0.55, 0.15, dur, v * 0.8);
+      for (const det of [-5, 5]) { const o = ac.createOscillator(); o.type = 'square'; o.frequency.value = f; o.detune.value = det; o.connect(fl); o.start(t0); o.stop(fin); }
+      fl.connect(g); destino(g, 0.25, 0.25);
+    },
+    pad(fs, t0, dur, v) {
+      const g = ac.createGain(), fl = ac.createBiquadFilter(); fl.type = 'lowpass'; fl.frequency.value = 1400; fl.Q.value = 0.7;
+      const fin = env(g, t0, 0.35, 0.3, 0.8, 0.6, dur, v);
+      for (const f of fs) for (const det of [-9, 0, 9]) { const o = ac.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f; o.detune.value = det; o.connect(fl); o.start(t0); o.stop(fin); }
+      fl.connect(g); destino(g, 0.5);
+    },
+    pluck(f, t0, v) {
+      const g = ac.createGain(), fl = ac.createBiquadFilter(); fl.type = 'lowpass';
+      fl.frequency.setValueAtTime(f * 8, t0); fl.frequency.exponentialRampToValueAtTime(f * 1.2, t0 + 0.2);
+      g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(v, t0 + 0.003); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.28);
+      const o = ac.createOscillator(); o.type = 'square'; o.frequency.value = f; o.connect(fl).connect(g); o.start(t0); o.stop(t0 + 0.3);
+      destino(g, 0.3, 0.3);
+    },
+    bajo(f, t0, dur, v) {
+      const g = ac.createGain(), fl = ac.createBiquadFilter(); fl.type = 'lowpass'; fl.Q.value = 5;
+      fl.frequency.setValueAtTime(f * 6, t0); fl.frequency.exponentialRampToValueAtTime(f * 2, t0 + 0.15);
+      const fin = env(g, t0, 0.005, 0.1, 0.75, 0.08, dur, v);
+      const o = ac.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f; o.connect(fl);
+      const s = ac.createOscillator(); s.type = 'sine'; s.frequency.value = f / 2; const gs = ac.createGain(); gs.gain.value = 0.9; s.connect(gs).connect(g);
+      fl.connect(g); o.start(t0); s.start(t0); o.stop(fin); s.stop(fin); destino(g, 0.05);
+    },
+    bombo(t0, v) {
+      const g = ac.createGain(), o = ac.createOscillator(); o.type = 'sine';
+      o.frequency.setValueAtTime(150, t0); o.frequency.exponentialRampToValueAtTime(42, t0 + 0.12);
+      g.gain.setValueAtTime(v, t0); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.35);
+      o.connect(g); o.start(t0); o.stop(t0 + 0.4); destino(g, 0.05);
+    },
+    caja(t0, v) {
+      const g = ac.createGain(), n = ac.createBufferSource(), fl = ac.createBiquadFilter();
+      n.buffer = ruido; fl.type = 'highpass'; fl.frequency.value = 1500;
+      g.gain.setValueAtTime(v, t0); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.18);
+      n.connect(fl).connect(g); n.start(t0, Math.random() * 0.5); n.stop(t0 + 0.2);
+      const o = ac.createOscillator(), go = ac.createGain(); o.type = 'triangle'; o.frequency.setValueAtTime(220, t0); o.frequency.exponentialRampToValueAtTime(140, t0 + 0.08);
+      go.gain.setValueAtTime(v * 0.7, t0); go.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.1); o.connect(go); go.connect(salida); o.start(t0); o.stop(t0 + 0.12);
+      destino(g, 0.3);
+    },
+    charles(t0, v, abierto) {
+      const g = ac.createGain(), n = ac.createBufferSource(), fl = ac.createBiquadFilter();
+      n.buffer = ruido; fl.type = 'highpass'; fl.frequency.value = 7000;
+      g.gain.setValueAtTime(v, t0); g.gain.exponentialRampToValueAtTime(0.0001, t0 + (abierto ? 0.2 : 0.045));
+      n.connect(fl).connect(g); n.start(t0, Math.random() * 0.5); n.stop(t0 + 0.22); destino(g, 0.1);
+    },
+    tom(t0, v, f = 110) {
+      const g = ac.createGain(), o = ac.createOscillator(); o.type = 'sine';
+      o.frequency.setValueAtTime(f * 1.6, t0); o.frequency.exponentialRampToValueAtTime(f, t0 + 0.1);
+      g.gain.setValueAtTime(v, t0); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.3);
+      o.connect(g); o.start(t0); o.stop(t0 + 0.32); destino(g, 0.2);
+    },
+  };
+  // Nota simple para efectos
+  function nota(f, t0, dur, vol, tipo = 'triangle', caida = 1) {
     const g = ac.createGain();
-    g.gain.setValueAtTime(0.0001, cuando);
-    g.gain.linearRampToValueAtTime(vol, cuando + 0.006);
-    g.gain.exponentialRampToValueAtTime(0.0001, cuando + dur);
-    g.connect(maestro);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(vol, t0 + 0.006); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
     if (tipo === 'ruido') {
-      const s = ac.createBufferSource(), fl = ac.createBiquadFilter();
-      s.buffer = ruido; fl.type = 'bandpass'; fl.frequency.value = f || 3000; fl.Q.value = 0.8;
-      s.connect(fl).connect(g); s.start(cuando); s.stop(cuando + dur + 0.02);
-      return;
+      const s = ac.createBufferSource(), fl = ac.createBiquadFilter(); s.buffer = ruido; fl.type = 'bandpass'; fl.frequency.value = f || 3000; fl.Q.value = 0.8;
+      s.connect(fl).connect(g); s.start(t0, Math.random() * 0.5); s.stop(t0 + dur + 0.02);
+    } else {
+      const o = ac.createOscillator(); o.type = tipo; o.frequency.setValueAtTime(f, t0);
+      if (caida !== 1) o.frequency.exponentialRampToValueAtTime(Math.max(20, f * caida), t0 + dur);
+      o.connect(g); o.start(t0); o.stop(t0 + dur + 0.02);
     }
-    const o = ac.createOscillator();
-    o.type = tipo; o.frequency.setValueAtTime(f, cuando);
-    if (caida !== 1) o.frequency.exponentialRampToValueAtTime(Math.max(20, f * caida), cuando + dur);
-    o.connect(g); o.start(cuando); o.stop(cuando + dur + 0.02);
+    destino(g, 0.15);
+  }
+
+  // ---- Programación de un paso (semicorchea n)
+  function programarPaso(n, t0) {
+    const c = cancion, rel = n - inicioCancion;
+    if (rel < 0) return;
+    const compas = Math.floor(rel / COMPAS), paso = rel % COMPAS, cIdx = compas % 16;
+    const intro = compas < 2;              // los 2 primeros compases: solo pad y arpegio
+    const ac1 = c.acordes[cIdx], acordes = triada(c, ac1, -1), raiz = grado(c, ac1, -2);
+    const vol = c.vol, fv = fiebre ? 1 : 0;
+    if (!musicaOn) return;
+    // pad: un acorde por compás
+    if (paso === 0) INST.pad(acordes.map(midiHz), t0, COMPAS * SEMI - 0.2, 0.022 * vol);
+    // arpegio en semicorcheas (sube y baja), más presente en fiebre
+    if (paso % (fiebre ? 1 : 2) === 0) {
+      const orden = [0, 1, 2, 3, 2, 1], k = Math.floor(paso / (fiebre ? 1 : 2)) % orden.length;
+      const m = orden[k] === 3 ? acordes[0] + 12 : acordes[orden[k]];
+      INST.pluck(midiHz(m + 12), t0, (0.022 + 0.01 * fv) * vol);
+    }
+    if (intro) return;
+    // bajo
+    const b = c.bajo, fB = midiHz(raiz);
+    if (b === 'lento' && paso % 8 === 0) INST.bajo(fB, t0, 0.9, 0.2 * vol);
+    if (b === 'pulso' && paso % 4 === 0) INST.bajo(paso % 8 === 4 ? midiHz(raiz + 7) : fB, t0, 0.4, 0.2 * vol);
+    if (b === 'ocho' && paso % 2 === 0) INST.bajo(paso % 8 === 6 ? fB * 2 : fB, t0, 0.2, 0.18 * vol);
+    if (b === 'galope' && [0, 3, 4, 8, 11, 12].includes(paso)) INST.bajo(paso === 12 ? midiHz(raiz + 7) : fB, t0, 0.14, 0.2 * vol);
+    // batería
+    const bt = BATERIAS[c.bat];
+    if (bt.k[paso] === 'x') INST.bombo(t0, 0.55 * vol);
+    if (bt.s[paso] === 'x') INST.caja(t0, 0.22 * vol);
+    if (bt.h[paso] === 'x') INST.charles(t0, (paso % 4 === 2 ? 0.06 : 0.035) * vol, paso === 14 && c.bat === 'marcha');
+    if (bt.t[paso] === 'x') INST.tom(t0, 0.12 * vol, c.bat === 'jefe' ? 90 : 160);
+    if (fiebre) { if (paso % 2 === 1) INST.charles(t0, 0.03, false); if (paso === 4 || paso === 12) INST.caja(t0, 0.08); }
+    if (compas % 8 === 7 && paso >= 12) INST.tom(t0, 0.14 * vol, 200 - (paso - 12) * 30);    // redoble de paso de sección
+    // melodía (corcheas)
+    if (paso % 2 === 0) {
+      const idx = cIdx * 8 + paso / 2, m = c.mel[idx];
+      if (m) {
+        const f = midiHz(grado(c, m.g, m.oct));
+        INST[c.lead](f, t0, m.dur * 2 * SEMI - 0.03, 0.05 * vol);
+        if (fiebre) INST.cuadrada(midiHz(grado(c, m.g + 2, m.oct + 1)), t0, m.dur * 2 * SEMI - 0.05, 0.018);
+      }
+    }
   }
 
   const A = G.audio = {
-    iniciar() {
-      if (ac || G.prueba) return;
+    iniciar(externo) {
+      if (ac || (G.prueba && !externo)) return;
       try {
-        ac = new (window.AudioContext || window.webkitAudioContext)();
-        maestro = ac.createGain(); maestro.gain.value = 0.9; maestro.connect(ac.destination);
+        ac = externo || new (window.AudioContext || window.webkitAudioContext)();
+        const comp = ac.createDynamicsCompressor(); comp.threshold.value = -16; comp.ratio.value = 4; comp.attack.value = 0.005; comp.release.value = 0.2;
+        const maestro = ac.createGain(); maestro.gain.value = 0.85; comp.connect(maestro).connect(ac.destination);
+        salida = ac.createGain(); salida.gain.value = 1; salida.connect(comp);
         ruido = crearRuido();
+        rev = crearReverb(); const rg = ac.createGain(); rg.gain.value = 0.7; rev.connect(rg).connect(comp);
+        const d = ac.createDelay(1); d.delayTime.value = BEAT * 0.75; const fb = ac.createGain(); fb.gain.value = 0.32;
+        const fl = ac.createBiquadFilter(); fl.type = 'lowpass'; fl.frequency.value = 2500;
+        d.connect(fl).connect(fb).connect(d); const eg = ac.createGain(); eg.gain.value = 0.6; fl.connect(eg).connect(comp);
+        eco = { entrada: d };
         desfase = ac.currentTime - G.t;
-        prog = Math.ceil(G.t / CORCHEA);
+        prog = Math.ceil(G.t / SEMI);
+        inicioCancion = Math.ceil(prog / COMPAS) * COMPAS;
       } catch (_) { ac = null; }
     },
     activo: () => !!ac && ac.state === 'running' && !pausado,
-    // Tiempo del juego según el audio (o null si no hay audio)
     reloj: () => (ac && !pausado ? ac.currentTime - desfase : null),
     pausar(p) {
       pausado = p;
       if (!ac) return;
-      if (p) ac.suspend(); else ac.resume().then(() => { desfase = ac.currentTime - G.t; prog = Math.ceil(G.t / CORCHEA); });
+      if (p) ac.suspend(); else ac.resume().then(() => { desfase = ac.currentTime - G.t; prog = Math.ceil(G.t / SEMI); });
     },
     musica(on) { if (on !== undefined) musicaOn = on; return musicaOn; },
-    tema(n) { tema = U.clamp(n, 0, TEMAS.length - 1); },
+    // Cambia de canción en el siguiente compás
+    tema(nombre) {
+      if (typeof nombre === 'number') nombre = ['titulo', 'pradera', 'bosque', 'noche', 'jefe'][nombre] || 'titulo';
+      if (!CANCIONES[nombre] || nombre === nombreCancion) return;
+      nombreCancion = nombre; cancion = CANCIONES[nombre];
+      const ahora = Math.ceil(G.t / SEMI) + 2;
+      inicioCancion = Math.ceil(ahora / COMPAS) * COMPAS;
+    },
+    cancion: () => nombreCancion,
     fiebre(b) { fiebre = b; },
     metronomo(b) { metronomo = b; },
     canto(orden, pulso0) { canto = { orden, pulso0 }; },
     tambor(tipo) {
       if (!ac) return;
-      const [f, d, v, ti] = TAMBOR[tipo];
-      nota(ti === 'ruido' ? 4200 : f, ac.currentTime, d, v, ti, ti === 'ruido' ? 1 : 0.5);
-      if (tipo === 'DON') nota(0, ac.currentTime, 0.12, 0.2, 'ruido');
+      const [f, d, v] = TAMBOR[tipo], t0 = ac.currentTime;
+      if (tipo === 'CHAKA') { INST.charles(t0, 0.25, true); nota(3500, t0, 0.08, 0.2, 'ruido'); return; }
+      INST.tom(t0, v, f);
+      if (tipo === 'DON') INST.bombo(t0, 0.5);
     },
     sfx(nombre, vol = 1) {
       if (!ac) return;
       const t0 = ac.currentTime;
       switch (nombre) {
-        case 'golpe': nota(900, t0, 0.07, 0.18 * vol, 'ruido'); nota(160, t0, 0.1, 0.18 * vol, 'square', 0.4); break;
-        case 'escudo': nota(1400, t0, 0.09, 0.08 * vol, 'square', 0.9); nota(2100, t0, 0.06, 0.05 * vol, 'square', 0.9); break;
-        case 'flecha': nota(1200, t0, 0.18, 0.05 * vol, 'triangle', 0.4); break;
-        case 'muerte': nota(300, t0, 0.35, 0.14 * vol, 'square', 0.25); break;
-        case 'jefe': nota(55, t0, 0.6, 0.5 * vol, 'sine', 0.5); nota(400, t0, 0.4, 0.3 * vol, 'ruido'); break;
+        case 'golpe': nota(900, t0, 0.07, 0.16 * vol, 'ruido'); nota(160, t0, 0.1, 0.16 * vol, 'square', 0.4); break;
+        case 'escudo': nota(1400, t0, 0.09, 0.07 * vol, 'square', 0.9); nota(2100, t0, 0.06, 0.05 * vol, 'square', 0.9); break;
+        case 'flecha': nota(1200, t0, 0.18, 0.04 * vol, 'triangle', 0.4); break;
+        case 'muerte': nota(300, t0, 0.35, 0.12 * vol, 'square', 0.25); break;
+        case 'moneda': nota(1318, t0, 0.06, 0.06 * vol, 'square'); nota(1760, t0 + 0.06, 0.12, 0.06 * vol, 'square'); break;
+        case 'jefe': INST.bombo(t0, 0.9 * vol); nota(400, t0, 0.4, 0.25 * vol, 'ruido'); break;
+        case 'trueno': nota(120, t0, 1.6, 0.3 * vol, 'ruido'); INST.bombo(t0, 0.4 * vol); break;
         case 'aviso': nota(880, t0, 0.08, 0.08 * vol, 'square'); nota(880, t0 + 0.12, 0.08, 0.08 * vol, 'square'); break;
-        case 'menu': nota(660, t0, 0.06, 0.08 * vol, 'square'); break;
-        case 'ok': nota(660, t0, 0.07, 0.08 * vol, 'square'); nota(990, t0 + 0.07, 0.1, 0.08 * vol, 'square'); break;
-        case 'fallo': nota(90, t0, 0.25, 0.2 * vol, 'square', 0.8); break;
-        case 'fiebre': [523, 659, 784, 1047].forEach((f, i) => nota(f, t0 + i * 0.06, 0.15, 0.07, 'square')); break;
-        case 'victoria': ['A4', 'C5', 'E5', 'A5', 'E5', 'A5'].forEach((n, i) => nota(N[n], t0 + i * 0.13, i === 5 ? 0.6 : 0.16, 0.09, 'square')); break;
-        case 'derrota': ['E4', 'D4', 'C4', 'A3'].forEach((n, i) => nota(N[n], t0 + i * 0.22, 0.3, 0.09, 'triangle')); break;
+        case 'menu': nota(660, t0, 0.05, 0.06 * vol, 'square'); break;
+        case 'ok': nota(660, t0, 0.07, 0.07 * vol, 'square'); nota(990, t0 + 0.07, 0.1, 0.07 * vol, 'square'); break;
+        case 'mejora': [523, 659, 784, 1047, 1319].forEach((f, i) => INST.pluck(f, t0 + i * 0.05, 0.08)); break;
+        case 'fallo': nota(90, t0, 0.25, 0.18 * vol, 'square', 0.8); break;
+        case 'fiebre': [523, 659, 784, 1047].forEach((f, i) => INST.pluck(f, t0 + i * 0.06, 0.08)); break;
+        case 'victoria': [69, 72, 76, 81, 76, 81].forEach((m, i) => INST.sierra(midiHz(m), t0 + i * 0.13, i === 5 ? 0.6 : 0.14, 0.07)); break;
+        case 'derrota': [64, 62, 60, 57].forEach((m, i) => INST.flauta(midiHz(m), t0 + i * 0.22, 0.3, 0.07)); break;
       }
     },
     actualizar() {
       if (!ac || pausado) return;
       const hasta = ac.currentTime - desfase + 0.15;
-      const T = TEMAS[tema];
-      while (prog * CORCHEA < hasta) {
-        const n = prog++, cuando = n * CORCHEA + desfase;
-        if (cuando < ac.currentTime - 0.01) continue;
-        const enPulso = n % 2 === 0, pulso = n >> 1;
-        if (musicaOn) {
-          const m = T.mel[n % T.mel.length];
-          if (m) nota(N[m], cuando, 0.2, T.vol, 'square');
-          if (enPulso) { const b = T.bajo[pulso % T.bajo.length]; if (b) nota(N[b], cuando, 0.42, 0.14, 'triangle'); }
-          nota(n % 2 ? 6000 : 8000, cuando, 0.025, n % 2 ? 0.008 : 0.014, 'ruido');
-          if (fiebre) {
-            nota(N[FIEBRE[n % FIEBRE.length]], cuando, 0.12, 0.03, 'square');
-            if (enPulso) nota(60, cuando, 0.15, 0.28, 'sine', 0.5);                  // bombo
-            if (enPulso && pulso % 2 === 1) nota(2500, cuando, 0.1, 0.07, 'ruido');   // caja
+      while (prog * SEMI < hasta) {
+        const n = prog++, t0 = n * SEMI + desfase;
+        if (t0 < ac.currentTime - 0.01) continue;
+        programarPaso(n, t0);
+        if (n % 4 === 0) {
+          const pulso = n / 4;
+          if (metronomo) nota(pulso % 4 === 0 ? 1320 : 880, t0, 0.05, 0.1, 'square');
+          if (canto) {
+            const k = pulso - canto.pulso0;
+            if (k >= 0 && k < 4) {
+              const m = grado(cancion, CANTOS[canto.orden][k], 0);
+              INST.sierra(midiHz(m), t0, 0.28, 0.05); INST.sierra(midiHz(m + 7), t0, 0.28, 0.025);   // coro a dos voces
+            }
+            if (k >= 4) canto = null;
           }
-        }
-        if (metronomo && enPulso) nota(pulso % 4 === 0 ? 1320 : 880, cuando, 0.05, 0.1, 'square');
-        if (canto && enPulso) {
-          const k = pulso - canto.pulso0;
-          if (k >= 0 && k < 4) {
-            const f = N[CANTOS[canto.orden][k]];
-            nota(f, cuando, 0.28, 0.07, 'sawtooth', 0.97); nota(f * 1.5, cuando, 0.28, 0.03, 'square', 0.97);
-          }
-          if (k >= 4) canto = null;
         }
       }
     },
   };
-  // Envolvente de la melodía para que los personajes se muevan con la música (determinista, sin audio).
+  // Prueba: renderiza una canción sin tiempo real y devuelve { pico, rms por segundo, wav base64 }
+  A.renderizar = async (nombre, seg, fiebreOn = false) => {
+    const off = new OfflineAudioContext(1, Math.round(22050 * seg), 22050);
+    ac = null; A.iniciar(off);
+    desfase = 0; prog = 0; cancion = CANCIONES[nombre]; nombreCancion = nombre; inicioCancion = 0; fiebre = fiebreOn; musicaOn = true;
+    for (let n = 0; n * SEMI < seg - 0.5; n++) programarPaso(n, n * SEMI);
+    const buf = await off.startRendering(), d = buf.getChannelData(0);
+    let pico = 0; const rms = [];
+    for (let s0 = 0; s0 < d.length; s0 += 22050) { let q = 0; for (let i = s0; i < Math.min(d.length, s0 + 22050); i++) { q += d[i] * d[i]; pico = Math.max(pico, Math.abs(d[i])); } rms.push(Math.sqrt(q / 22050)); }
+    const bytes = new Uint8Array(44 + d.length * 2), v = new DataView(bytes.buffer);
+    const str = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+    str(0, 'RIFF'); v.setUint32(4, 36 + d.length * 2, true); str(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, 22050, true); v.setUint32(28, 44100, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, 'data'); v.setUint32(40, d.length * 2, true);
+    for (let i = 0; i < d.length; i++) v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, d[i])) * 32767, true);
+    let bin = ''; for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    ac = null;
+    return { pico, rms, wav: btoa(bin) };
+  };
+  // Envolvente de la melodía en el instante tt (para que los personajes se muevan con la música)
   A.pulsoMelodia = (tt) => {
-    const T = TEMAS[tema], n = Math.floor(tt / CORCHEA), m = T.mel[((n % T.mel.length) + T.mel.length) % T.mel.length];
-    return m ? { e: Math.exp(-(tt - n * CORCHEA) * 12), alto: (N[m] - 400) / 400 } : { e: 0, alto: 0 };
+    const c = cancion, n = Math.floor(tt / (2 * SEMI)), rel = n - inicioCancion / 2;
+    if (rel < 0) return { e: 0, alto: 0 };
+    const idx = ((rel % 128) + 128) % 128, m = c.mel[idx];
+    return m ? { e: Math.exp(-(tt - n * 2 * SEMI) * 10), alto: (m.g + 7 * m.oct - 4) / 7 } : { e: 0, alto: 0 };
   };
 })(window.G);
 
@@ -600,6 +815,75 @@ window.G = (() => {
 
 </script>
 <script>
+// ---- 14_campana.js
+// 14_campana.js — campaña de 7 fases con dificultad creciente, economía de monedas, mejoras de tropa
+// (nivel 1–5 por clase, con equipo visible) y reclutamiento. Los datos persisten en G.prog.
+(function (G) {
+  const e = (tipo, x) => ({ tipo, x });
+  const FASES = [
+    { nombre: 'Pradera del vado', sub: 'Marcha y ataca al ritmo', bioma: 'pradera', largo: 1400, meta: 1340, cancion: 'pradera', recompensa: 60, dif: 0,
+      enemigos: [e('bruto', 520), e('bruto', 565), e('empalizada', 800), e('bruto', 1010), e('lancero', 1060)], fogatas: [] },
+    { nombre: 'Colinas de abedules', sub: 'Llegan los arqueros', bioma: 'pradera', largo: 1700, meta: 1640, cancion: 'pradera', recompensa: 80, dif: 1,
+      enemigos: [e('arquero', 460), e('bruto', 500), e('lancero', 720), e('empalizada', 900), e('arquero', 940), e('bruto', 1150), e('bruto', 1190), e('lancero', 1400), e('arquero', 1450)], fogatas: [] },
+    { nombre: 'Bosque de otoño', sub: 'Carga para romper escudos', bioma: 'otono', largo: 1800, meta: 1740, cancion: 'bosque', recompensa: 100, dif: 2,
+      enemigos: [e('escudado', 480), e('bruto', 520), e('arquero', 560), e('lancero', 800), e('escudado', 1000), e('empalizada', 1050), e('arquero', 1090), e('bruto', 1300), e('escudado', 1450), e('arquero', 1500)], fogatas: [300, 1200] },
+    { nombre: 'Bosque de niebla', sub: 'El caudillo te espera', bioma: 'niebla', clima: 'niebla', largo: 1900, meta: 1840, cancion: 'bosque', recompensa: 140, dif: 3,
+      enemigos: [e('arquero', 450), e('lancero', 500), e('escudado', 740), e('bruto', 780), e('empalizada', 1000), e('arquero', 1040), e('arquero', 1080), e('lancero', 1300), e('caudillo', 1560), e('bruto', 1600)], fogatas: [360, 1180] },
+    { nombre: 'Pantano de luciérnagas', sub: 'Defiende cuando apunten', bioma: 'pantano', largo: 2000, meta: 1940, cancion: 'noche', recompensa: 170, dif: 4,
+      enemigos: [e('bruto', 420), e('arquero', 470), e('lancero', 700), e('lancero', 745), e('empalizada', 960), e('arquero', 995), e('arquero', 1030), e('escudado', 1260), e('bruto', 1300), e('lancero', 1520), e('arquero', 1570), e('caudillo', 1700)],
+      fogatas: [150, 620, 1150, 1720] },
+    { nombre: 'Paso nevado', sub: 'La última muralla', bioma: 'nieve', largo: 2100, meta: 2040, cancion: 'montana', recompensa: 200, dif: 5,
+      enemigos: [e('escudado', 440), e('escudado', 480), e('arquero', 520), e('empalizada', 760), e('arquero', 790), e('lancero', 1000), e('lancero', 1040), e('bruto', 1080), e('empalizada', 1300), e('caudillo', 1360),
+        e('arquero', 1400), e('escudado', 1640), e('bruto', 1680), e('arquero', 1720)], fogatas: [300, 1150, 1900] },
+    { nombre: 'El gigante del río', sub: 'Salta su onda y defiende su garrote', bioma: 'tormenta', largo: 900, meta: null, cancion: 'jefe', recompensa: 400, dif: 6, jefe: true,
+      enemigos: [e('jefe', 620)], fogatas: [120, 460, 820] },
+  ];
+  const CLASES = {
+    lanza:   { nombre: 'Lanceros',   rol: 'Daño cuerpo a cuerpo', recluta: 50, max: 5 },
+    escudo:  { nombre: 'Escuderos',  rol: 'Aguantan en primera fila', recluta: 70, max: 4 },
+    arco:    { nombre: 'Arqueros',   rol: 'Disparan desde lejos', recluta: 60, max: 4 },
+    bandera: { nombre: 'Abanderado', rol: 'Moral: más daño a todos', recluta: 0, max: 1 },
+  };
+  const NIVEL_MAX = 5;
+  const C = G.campana = { FASES, CLASES, NIVEL_MAX };
+
+  function datos() {
+    const d = G.prog.datos;
+    if (!d.tropa) d.tropa = { lanza: 3, escudo: 2, arco: 2, bandera: 1 };
+    if (!d.niveles) d.niveles = { lanza: 1, escudo: 1, arco: 1, bandera: 1 };
+    if (d.monedas === undefined) d.monedas = 0;
+    return d;
+  }
+  C.datos = datos;
+  C.costeMejora = (clase) => { const n = datos().niveles[clase]; return n >= NIVEL_MAX ? null : Math.round(45 * Math.pow(n, 1.55) * (clase === 'bandera' ? 1.5 : 1)); };
+  C.costeRecluta = (clase) => { const d = datos(); return d.tropa[clase] >= CLASES[clase].max ? null : CLASES[clase].recluta + 20 * (d.tropa[clase] - 1); };
+  C.mejorar = (clase) => {
+    const d = datos(), c = C.costeMejora(clase);
+    if (c === null || d.monedas < c) return false;
+    d.monedas -= c; d.niveles[clase]++; G.prog.guardar(); return true;
+  };
+  C.reclutar = (clase) => {
+    const d = datos(), c = C.costeRecluta(clase);
+    if (c === null || d.monedas < c) return false;
+    d.monedas -= c; d.tropa[clase]++; G.prog.guardar(); return true;
+  };
+  // Estadísticas de una clase según su nivel (vida y daño), moral del abanderado
+  C.stats = (clase) => {
+    const n = datos().niveles[clase], moral = 1 + 0.06 * (datos().niveles.bandera - 1);
+    return { vida: 1 + 0.25 * (n - 1), dano: (1 + 0.2 * (n - 1)) * moral, nivel: n };
+  };
+  C.ganar = (m) => { datos().monedas += m; G.prog.guardar(); };
+  C.dificultad = (fase) => FASES[fase].jefe ? { vida: 1.6, dano: 1.25 } : { vida: 1 + 0.13 * FASES[fase].dif, dano: 1 + 0.08 * FASES[fase].dif };
+  // Mejoras que un jugador puede haber pagado al llegar a cada fase (para las pruebas automáticas)
+  C.progresoEsperado = (fase) => {
+    const d = datos(), n = [1, 1, 2, 2, 3, 3, 4][fase];
+    d.niveles = { lanza: n, escudo: n, arco: n, bandera: Math.max(1, n - 1) };
+    d.tropa = { lanza: fase >= 2 ? 4 : 3, escudo: fase >= 4 ? 3 : 2, arco: fase >= 4 ? 3 : 2, bandera: 1 };
+  };
+})(window.G);
+
+</script>
+<script>
 // ---- 20_esqueleto.js
 // 20_esqueleto.js — stickman pixel art reutilizable (tropa, enemigos y jefe).
 // Cadera → torso → cabeza; piernas y brazos de 2 huesos resueltos con IK (ley de cosenos).
@@ -663,6 +947,49 @@ window.G = (() => {
     });
   }
 
+  // ---- Accesorios con carisma
+  // Bufanda: cadena de 5 puntos (verlet) anclada al cuello, en coordenadas de mundo; el viento y la
+  // velocidad la hacen ondear hacia atrás.
+  function bufanda(e, nx, ny, col, s, vx, dt) {
+    const ax = nx + G.camX, n = 6, L = 2.2 * s;
+    if (!e.buf) e.buf = Array.from({ length: n }, (_, i) => ({ x: ax - e.dir * i * L, y: ny + i, px: ax - e.dir * i * L, py: ny + i }));
+    const viento = (G.escena ? G.escena.viento : 0.4) * 22, h = Math.min(0.05, dt);
+    const b = e.buf;
+    b[0].x = ax; b[0].y = ny; b[0].px = ax; b[0].py = ny;
+    for (let i = 1; i < n; i++) {
+      const p = b[i], vxp = (p.x - p.px) * 0.9, vyp = (p.y - p.py) * 0.9;
+      p.px = p.x; p.py = p.y;
+      p.x += vxp - viento * h * h * 12 + Math.sin(G.t * 7 + i) * 0.04;
+      p.y += vyp + 30 * h * h * 12;
+    }
+    for (let it = 0; it < 3; it++) for (let i = 1; i < n; i++) {
+      const a = b[i - 1], p = b[i], dx = p.x - a.x, dy = p.y - a.y, d = Math.hypot(dx, dy) || 0.001;
+      p.x = a.x + dx / d * L; p.y = a.y + dy / d * L;
+    }
+    for (let i = 1; i < n; i++) D.linea(b[i - 1].x - G.camX, b[i - 1].y, b[i].x - G.camX, b[i].y, i === n - 1 ? U.shade(col, 0.8) : col, Math.max(1, Math.round(s * (i < 3 ? 2 : 1))));
+  }
+  // Tocados por clase; g = { tipo, col (metal/tela), pluma }
+  function gorro(g, cx, cy, d, s, col) {
+    const R = (x, y, w, h, c) => D.rect(d > 0 ? cx + x * s : cx - (x + w - 1) * s - (s - 1), cy + y * s, w * s, h * s, c);
+    if (g.tipo === 'yelmo') {                       // escudero: casco redondo con nasal y cresta
+      R(-3, -4, 7, 2, g.col); R(-4, -2, 9, 2, g.col); R(-4, 0, 1, 3, g.col); R(2, 0, 1, 3, g.col);
+      R(-1, -5, 3, 1, g.pluma || g.col); if (g.pluma) R(-2, -6, 5, 1, g.pluma);
+    } else if (g.tipo === 'punta') {                // lancero: casco cónico con pluma que se mece
+      R(0, -7, 1, 2, g.col); R(-1, -5, 3, 1, g.col); R(-2, -4, 5, 1, g.col); R(-3, -3, 7, 2, g.col);
+      if (g.pluma) { const m = Math.round(Math.sin(G.t * 6 + cx) * 0.8); R(-2 + m, -9, 1, 3, g.pluma); R(-3 + m, -10, 1, 2, g.pluma); }
+    } else if (g.tipo === 'capucha') {              // arquero: capucha con pico hacia atrás
+      R(-3, -4, 7, 2, g.col); R(-4, -2, 2, 5, g.col); R(-5, -3, 1, 3, g.col); R(-6, -1, 1, 2, g.col);
+      if (g.pluma) R(2, -6, 1, 3, g.pluma);
+    } else if (g.tipo === 'sombrero') {             // abanderado: sombrero de ala ancha con pluma
+      R(-6, -3, 13, 1, g.col); R(-3, -6, 7, 3, g.col); R(-3, -4, 7, 1, g.cinta || '#B8322A');
+      R(3, -9, 1, 4, g.pluma || '#F2C14E'); R(4, -10, 1, 2, g.pluma || '#F2C14E');
+    } else if (g.tipo === 'mascara') {              // enemigos: máscara de hueso con rendijas y cuernos
+      R(-1, -3, 5, 6, g.col); R(0, -1, 1, 1, '#1A0A0A'); R(2, -1, 1, 1, '#1A0A0A'); R(1, 2, 1, 1, '#1A0A0A');
+      R(-3, -6, 1, 3, g.cuerno || g.col); R(-4, -8, 1, 2, g.cuerno || g.col); R(3, -6, 1, 2, g.cuerno || g.col); R(4, -8, 1, 2, g.cuerno || g.col);
+      if (g.corona) { R(-3, -5, 7, 1, g.corona); R(-3, -7, 1, 2, g.corona); R(0, -8, 1, 3, g.corona); R(3, -7, 1, 2, g.corona); }
+    }
+  }
+
   const E = G.esq = {
     crear(o = {}) {
       return Object.assign({ escala: 1, color: '#15131A', torso: 9, retraso: 0, oido: 0.6, dir: 1, pies: null, pFase: 0, marcha: false }, o);
@@ -688,10 +1015,12 @@ window.G = (() => {
       const shx = hx + dir * incl, shy = hy - e.torso * s + cab * 0.8 * s;
       D.linea(hx, hy, shx, shy, col, gr);
       D.linea(hx + dir * gr, hy - gr, shx + dir * gr, shy + gr, col, gr);
-      const cx = Math.round(shx + dir * (incl * 0.3 - mira * s)), cy = Math.round(shy - 4 * s - mira * s + cab * 0.5 * s);
-      const filas = [3, 5, 5, 5, 3];
-      filas.forEach((w, i) => D.rect(cx - Math.floor(w * s / 2), cy + (i - 2) * s, w * s, s, col));
-      if (e.cuernos) { D.rect(cx - 3 * s, cy - 4 * s, s, 2 * s, e.cuernos); D.rect(cx + 2 * s, cy - 4 * s, s, 2 * s, e.cuernos); }
+      const cx = Math.round(shx + dir * (incl * 0.3 - mira * s)), cy = Math.round(shy - 5 * s - mira * s + cab * 0.5 * s);
+      // cabeza redonda de 7 px (proporción chibi: más carisma)
+      [3, 5, 7, 7, 7, 5, 3].forEach((w, i) => D.rect(cx - Math.floor(w * s / 2), cy + (i - 3) * s, w * s, s, col));
+      if (pose.bufanda) bufanda(e, shx, shy + s, pose.bufanda, s, pose.vx || 0, pose.dt || G.dt);
+      if (pose.gorro) gorro(pose.gorro, cx, cy, dir, s, col);
+      else if (e.cuernos) { D.rect(cx - 4 * s, cy - 5 * s, s, 3 * s, e.cuernos); D.rect(cx + 3 * s, cy - 5 * s, s, 3 * s, e.cuernos); }
       // Brazos: objetivos de mano en coordenadas locales respecto al hombro
       const at = pose.atras || { x: -1, y: 8 }, fr = pose.frente || { x: 4, y: 5 };
       const ra = miembro(shx, shy + s, shx + dir * at.x * s, shy + s + at.y * s, BR, AN, dir, col, gr);
@@ -715,8 +1044,27 @@ window.G = (() => {
     escudo:  { hp: 75, alcance: 13, dano: 5 },
     arco:    { hp: 30, alcance: 165, dano: 6 },
   };
-  // Formación (desplazamiento respecto al abanderado): escudos delante, arqueros detrás.
-  const FORMACION = [['escudo', 38], ['escudo', 29], ['lanza', 20], ['lanza', 11], ['bandera', 0], ['lanza', -9], ['arco', -19], ['arco', -29]];
+  // Formación: escudos delante, luego lanzas, el abanderado y los arqueros detrás (según lo reclutado)
+  function formacion() {
+    const d = G.campana.datos().tropa, orden = [];
+    for (let i = 0; i < d.escudo; i++) orden.push('escudo');
+    for (let i = 0; i < d.lanza; i++) orden.push(i < Math.ceil(d.lanza / 2) ? 'lanza' : 'lanza2');
+    orden.push('bandera');
+    for (let i = 0; i < d.arco; i++) orden.push('arco');
+    // lanzas repartidas delante y detrás del abanderado
+    const delante = orden.filter((t) => t === 'escudo' || t === 'lanza'), detras = orden.filter((t) => t === 'lanza2' || t === 'arco');
+    const res = [];
+    delante.forEach((t, i) => res.push([t, (delante.length - i) * 12]));
+    res.push(['bandera', 0]);
+    detras.sort((a, b2) => (a === 'lanza2' ? -1 : 1) - (b2 === 'lanza2' ? -1 : 1)).forEach((t, i) => res.push([t === 'lanza2' ? 'lanza' : t, -(i + 1) * 12]));
+    return res;
+  }
+  const METALES = ['#62646F', '#62646F', '#A06C36', '#B8BCC6', '#E8B84A', '#F2D060'];
+  function equipo(tipo, nivel) {
+    const col = METALES[nivel], pluma = nivel >= 3 ? (nivel >= 5 ? '#F2D060' : '#D8402A') : null;
+    const g = { lanza: 'punta', escudo: 'yelmo', arco: 'capucha', bandera: 'sombrero' }[tipo];
+    return { tipo: g, col: tipo === 'arco' ? (nivel >= 3 ? '#4E7A44' : '#3E5A3A') : tipo === 'bandera' ? '#5A3A2A' : col, pluma, cinta: col };
+  }
 
   const T = G.tropa = { unidades: [], ej: { x: 60, vel: 0, cargado: false } };
 
@@ -730,10 +1078,12 @@ window.G = (() => {
 
   T.reiniciar = (x = 60) => {
     T.ej = { x, vel: 0, cargado: false };
-    T.unidades = FORMACION.map(([tipo, off], i) => {
-      const d = TIPOS[tipo];
+    const f = formacion(); T.frenteOff = Math.max(...f.map((u) => u[1]));
+    T.unidades = f.map(([tipo, off], i) => {
+      const d = TIPOS[tipo], st = G.campana.stats(tipo), hp = Math.round(d.hp * st.vida);
       return {
-        i, tipo, off, x: x + off, vx: 0, hp: d.hp, max: d.hp, vivo: true, bando: 'tropa', ancho: 6,
+        i, tipo, off, x: x + off, vx: 0, hp, max: hp, vivo: true, bando: 'tropa', ancho: 6, dano: d.dano * st.dano,
+        gorro: equipo(tipo, st.nivel), bufCol: tipo === 'bandera' ? '#F2C14E' : st.nivel >= 5 ? '#E8B84A' : '#B8322A', celebra: 0,
         esq: G.esq.crear({ retraso: U.hash(i, 11) * 0.07, torso: 8 + Math.floor(U.hash(i, 12) * 3), oido: 0.4 + 0.6 * U.hash(i, 13) }),
         brio: 0.75 + 0.5 * U.hash(i, 15), vagar: U.hash(i, 14) * 100, fase: U.hash(i, 3) * 6,
         gesto: null, proxGesto: 1 + U.hash(i, 16) * 4, salto: 0, herido: 0, verVida: 0,
@@ -741,6 +1091,7 @@ window.G = (() => {
       };
     });
   };
+  T.frenteOff = 40;
   T.vivas = () => T.unidades.filter((u) => u.vivo);
   T.frente = () => { let m = -1e9; for (const u of T.unidades) if (u.vivo) m = Math.max(m, u.x); return m; };
   T.abanderado = () => T.unidades.find((u) => u.tipo === 'bandera');
@@ -757,6 +1108,7 @@ window.G = (() => {
 
   G.on('orden', (o) => { if (o.orden === 'cargar') T.ej.cargado = true; });
   G.on('fin_orden', (o) => { if (o.orden === 'atacar') T.ej.cargado = false; });
+  G.on('muere', (o) => { if (o.bando === 'enem') for (const u of T.unidades) if (u.vivo && Math.abs(u.x - o.x) < 110) u.celebra = 0.9 + Math.random() * 0.3; });
   G.on('golpe', (g) => { if (g.juicio === 'perfecto' || g.juicio === 'bien') for (const u of T.unidades) u.salto = 0.22; });
 
   function enemigoMasCercano(u, rango) {
@@ -775,7 +1127,7 @@ window.G = (() => {
     let vel = 0;
     if (o && o.orden === 'marchar') {
       const bloqueo = G.enem.bloqueo();                     // primer enemigo/empalizada vivo delante
-      const frente = ej.x + 40;
+      const frente = ej.x + T.frenteOff;
       vel = bloqueo === null || bloqueo - frente > 10 ? VEL : 0;
       if (niv && ej.x > niv.datos.largo - 70) vel = 0;
     } else if (o && o.orden === 'retroceder') {
@@ -805,9 +1157,9 @@ window.G = (() => {
           u.ultGolpe = b;
           const pot = o.potencia * (fiebre ? 1.5 : 1) * (ej.cargado ? 2 : 1);
           if (u.tipo === 'arco') {
-            if (e && (b - o.pulso0) % 2 === 0) G.combate.flecha(u.x + 6, G.GY - 22, e, 'tropa', d.dano * pot);
+            if (e && (b - o.pulso0) % 2 === 0) G.combate.flecha(u.x + 6, G.GY - 22, e, 'tropa', u.dano * pot);
           } else if (e && Math.abs(e.x - e.ancho / 2 - u.x) <= d.alcance + 3) {
-            G.combate.danar(e, d.dano * pot, u);
+            G.combate.danar(e, u.dano * pot, u);
           }
         }
       }
@@ -820,7 +1172,7 @@ window.G = (() => {
       const e = enemigoMasCercano(u, 12);
       if (e && vx > 0 && e.x - e.ancho / 2 - u.x < 6) vx = 0;
       u.vx = vx; u.x += vx * dt;
-      u.salto = Math.max(0, u.salto - dt); u.herido = Math.max(0, u.herido - dt); u.verVida = Math.max(0, u.verVida - dt);
+      u.celebra = Math.max(0, u.celebra - dt); u.salto = Math.max(0, u.salto - dt); u.herido = Math.max(0, u.herido - dt); u.verVida = Math.max(0, u.verVida - dt);
       // Gestos en reposo
       u.proxGesto -= dt;
       if (!u.gesto && u.proxGesto <= 0 && !o && Math.abs(vx) < 1) {
@@ -847,16 +1199,24 @@ window.G = (() => {
     const agache = (defiende ? 2 : 0) + (carga ? 2 + Math.sin(G.t * 30) * 0.5 : 0) + (u.esq.marcha ? 0 : respira * 0.6);
     const bal = Math.sin(2 * Math.PI * (u.esq.pFase || 0));
     const vx = u.vx;
+    const fiesta = u.celebra > 0 || (G.nivel && G.nivel.fin === 'victoria');
+    const baile = G.ritmo.fiebre && !ataca && !defiende && !u.esq.marcha;
     const pose = {
       hipW, vx, hop, agache, incl: (u.esq.marcha ? 1 : 0) + lunge * 2 + (defiende ? 1 : 0) + cab * 0.6, cab, mira: gt === 'mirar' ? ges : 0,
       reposo: ataca && u.tipo !== 'arco' ? [-4, 5] : defiende ? [-4, 4] : [-2, 3], dt,
       atras: { x: -1 - (u.esq.marcha ? 3 * bal : 0) - cab * 1.5 * mel.alto, y: 8 - cab * 2 },
       frente: { x: 4, y: 5 }, color: u.herido > 0 ? '#E8E4DA' : null,
+      gorro: u.gorro, bufanda: u.bufCol,
     };
+    if (u.herido > 0) pose.incl -= 3;                                   // se encoge hacia atrás
+    let brazosArriba = 0;
+    if (fiesta) { brazosArriba = 1; pose.hop = Math.max(pose.hop, Math.abs(Math.sin(G.t * 9 + u.fase)) * 3); }
+    else if (baile) { brazosArriba = Math.max(0, Math.sin(2 * Math.PI * p)); pose.hop = Math.max(pose.hop, (1 - p) * 1.5); }
+    if (brazosArriba > 0) pose.atras = { x: -2, y: 8 - brazosArriba * 16 };
     let luz = null;
     if (u.tipo === 'lanza') {
       const golpea = gt === 'golpear' ? Math.max(0, Math.sin(Math.PI * 2 * u.gesto.a / BEAT)) * 2 : 0;
-      pose.frente = { x: 4 + th, y: 5 - (ataca ? 1 : 0) + golpea - (defiende ? 2 : 0) };
+      pose.frente = { x: 4 + th, y: 5 - (ataca ? 1 : 0) + golpea - (defiende ? 2 : 0) - brazosArriba * 9 };
       const r = G.esq.dibujar(u.esq, pose);
       const ang = ataca ? 0 : defiende ? -Math.PI / 4 : -Math.PI / 2 - 0.15 * (u.esq.marcha ? 1 : 0);
       const ux = Math.cos(ang) * r.dir, uy = Math.sin(ang), m = r.mano;
@@ -887,7 +1247,7 @@ window.G = (() => {
       D.linea(m.x, m.y - 6, cx, m.y, '#8A8F99'); D.linea(cx, m.y, m.x, m.y + 6, '#8A8F99');
       if (tensa > 0.05) D.linea(cx, m.y, m.x + d * 5, m.y, r.col);
     } else if (u.tipo === 'bandera') {
-      pose.frente = { x: 4, y: 4 - cab };
+      pose.frente = { x: 4, y: 4 - cab - brazosArriba * 6 };
       const r = G.esq.dibujar(u.esq, pose);
       const bx = Math.round(r.mano.x), top = Math.round(r.mano.y) - 22;
       D.linea(bx, Math.min(G.GY - 1, r.mano.y + 8), bx, top, r.col);
@@ -921,22 +1281,25 @@ window.G = (() => {
   const U = G.u, D = G.d, BEAT = G.BEAT;
   const PIEL = '#3A1616', HUESO = '#D8CBB0', METAL = '#B7B9BE', MADERA = '#6A4A30', MADERA2 = '#4A3220';
   const TIPOS = {
-    bruto:      { hp: 36, dano: 7, alcance: 14, vel: 18, aggro: 190, ancho: 6, puntos: 100 },
-    lancero:    { hp: 26, dano: 9, alcance: 20, vel: 22, aggro: 200, ancho: 6, puntos: 120 },
-    arquero:    { hp: 20, dano: 5, alcance: 150, vel: 14, aggro: 210, ancho: 6, puntos: 120 },
-    empalizada: { hp: 70, dano: 0, alcance: 0, vel: 0, aggro: 0, ancho: 14, puntos: 80 },
-    jefe:       { hp: 450, dano: 18, alcance: 75, vel: 14, aggro: 400, ancho: 22, puntos: 2000 },
+    bruto:      { hp: 36, dano: 7, alcance: 14, vel: 18, aggro: 190, ancho: 6, puntos: 100, monedas: 5 },
+    lancero:    { hp: 26, dano: 9, alcance: 20, vel: 22, aggro: 200, ancho: 6, puntos: 120, monedas: 6 },
+    arquero:    { hp: 20, dano: 5, alcance: 150, vel: 14, aggro: 210, ancho: 6, puntos: 120, monedas: 6 },
+    escudado:   { hp: 44, dano: 7, alcance: 14, vel: 15, aggro: 190, ancho: 8, puntos: 150, monedas: 8 },
+    caudillo:   { hp: 190, dano: 14, alcance: 20, vel: 14, aggro: 230, ancho: 11, puntos: 600, monedas: 40 },
+    empalizada: { hp: 70, dano: 0, alcance: 0, vel: 0, aggro: 0, ancho: 14, puntos: 80, monedas: 4 },
+    jefe:       { hp: 450, dano: 18, alcance: 75, vel: 14, aggro: 400, ancho: 22, puntos: 2000, monedas: 0 },
   };
   const E = G.enem = { lista: [], TIPOS };
 
-  E.reiniciar = (defs) => {
+  E.reiniciar = (defs, dif = { vida: 1, dano: 1 }) => {
     E.lista = defs.map((d, i) => {
-      const t = TIPOS[d.tipo];
-      const e = { i, tipo: d.tipo, x: d.x, x0: d.x, vx: 0, hp: t.hp, max: t.hp, vivo: true, bando: 'enem', ancho: t.ancho,
+      const t = TIPOS[d.tipo], hp = Math.round(t.hp * dif.vida);
+      const e = { i, tipo: d.tipo, x: d.x, x0: d.x, vx: 0, hp, max: hp, danoM: dif.dano, vivo: true, bando: 'enem', ancho: t.ancho,
         estado: 'espera', herido: 0, verVida: 0, ataque: null, cooldown: 0, anim: 0 };
       if (d.tipo !== 'empalizada') {
         e.esq = G.esq.crear({ dir: -1, color: PIEL, cuernos: HUESO, retraso: U.hash(i, 21) * 0.08, torso: 9 + Math.floor(U.hash(i, 22) * 2),
-          escala: d.tipo === 'jefe' ? 2.4 : 1, oido: 0.3 });
+          escala: d.tipo === 'jefe' ? 2.4 : d.tipo === 'caudillo' ? 1.6 : 1, oido: 0.3 });
+        e.gorro = { tipo: 'mascara', col: '#E8DCC0', cuerno: '#C9B79A', corona: d.tipo === 'caudillo' || d.tipo === 'jefe' ? '#F2C14E' : null };
       }
       if (d.tipo === 'jefe') { e.patron = 0; e.pulsosEnFase = 0; }
       return e;
@@ -977,8 +1340,8 @@ window.G = (() => {
         // Ataque en 2 pulsos: preparar (b) y golpear (b+1)
         if (!e.ataque && e.cooldown <= 0) { e.ataque = { b0: b, obj: ob.u }; }
         else if (e.ataque && b === e.ataque.b0 + 1) {
-          if (e.tipo === 'arquero') G.combate.flecha(e.x - 6, G.GY - 22, e.ataque.obj, 'enem', t.dano);
-          else if (Math.abs(e.x - e.ancho / 2 - e.ataque.obj.x) <= t.alcance + 4) G.combate.danar(e.ataque.obj, t.dano, e);
+          if (e.tipo === 'arquero') G.combate.flecha(e.x - 6, G.GY - 22, e.ataque.obj, 'enem', t.dano * e.danoM);
+          else if (Math.abs(e.x - e.ancho / 2 - e.ataque.obj.x) <= t.alcance + 4) { G.combate.danar(e.ataque.obj, t.dano * e.danoM, e); if (e.tipo === 'caudillo') { G.temblor = 0.15; G.combate.polvo(e.x - 16, 6); } }
           e.ataque = null; e.cooldown = e.tipo === 'arquero' ? 2 : 1;
         }
       }
@@ -1002,12 +1365,12 @@ window.G = (() => {
       if (e.pulsosEnFase === 1) G.audio.sfx('aviso');
       if (e.pulsosEnFase === DUR.golpe) {        // cae el garrote en el tercer pulso
         G.audio.sfx('jefe'); G.temblor = 0.35;
-        for (const u of G.tropa.unidades) if (u.vivo && e.x - u.x < TIPOS.jefe.alcance && e.x - u.x > -20) G.combate.danar(u, TIPOS.jefe.dano, e);
+        for (const u of G.tropa.unidades) if (u.vivo && e.x - u.x < TIPOS.jefe.alcance && e.x - u.x > -20) G.combate.danar(u, TIPOS.jefe.dano * e.danoM, e);
         G.combate.polvo(e.x - 55, 14);
       }
     } else if (e.fase === 'pisoton') {
       if (e.pulsosEnFase === 1) G.audio.sfx('aviso');
-      if (e.pulsosEnFase === DUR.pisoton) { G.audio.sfx('jefe', 0.6); G.temblor = 0.2; G.combate.onda(e.x - 18, -110, 9, 'enem'); }
+      if (e.pulsosEnFase === DUR.pisoton) { G.audio.sfx('jefe', 0.6); G.temblor = 0.2; G.combate.onda(e.x - 18, -110, 9 * e.danoM, 'enem'); }
     }
     if (e.pulsosEnFase >= DUR[e.fase]) { e.patron++; e.fase = null; }
   }
@@ -1052,7 +1415,7 @@ window.G = (() => {
       hipW: e.x, vx: e.vx, dt, hop: jefe && e.fase === 'pisoton' && e.pulsosEnFase < 2 ? U.smooth(p) * 3 : 0,
       incl: 1 + golpe * 2 - prep, cab: 0, agache: 0, reposo: [-2, 3],
       atras: { x: -1, y: 8 }, frente: { x: 4 + golpe * 6 - prep * 3, y: 5 - prep * 8 },
-      color: e.herido > 0 ? '#E8E4DA' : null,
+      color: e.herido > 0 ? '#E8E4DA' : null, gorro: e.gorro,
     };
     if (jefe) { pose.frente = { x: 3 - alza * 6, y: 4 - alza * 13 }; pose.atras = { x: -2 - alza * 3, y: 6 - alza * 10 }; }
     const r = G.esq.dibujar(e.esq, pose);
@@ -1061,6 +1424,16 @@ window.G = (() => {
       const ang = -Math.PI / 2 + (golpe * 1.6 - prep * 0.8) * 1;
       const ex = m.x + Math.cos(ang) * d * 9, ey = m.y + Math.sin(ang) * 9;
       D.linea(m.x, m.y, ex, ey, MADERA); D.disco(ex, ey, 2, MADERA2);
+    } else if (e.tipo === 'escudado' || e.tipo === 'caudillo') {
+      const gr = e.tipo === 'caudillo' ? 2 : 1, L = e.tipo === 'caudillo' ? 16 : 8;
+      const ang = -Math.PI / 2 + (golpe * 1.7 - prep * 0.9);
+      const ex = m.x + Math.cos(ang) * d * L, ey = m.y + Math.sin(ang) * L;
+      D.linea(m.x, m.y, ex, ey, MADERA, gr);
+      D.rect(ex - (d > 0 ? 0 : 3 * gr), ey - 2 * gr, 3 * gr, 4 * gr, METAL);     // hacha
+      if (e.tipo === 'escudado') {                                             // escudo grande delante
+        const sx0 = Math.round(r.shx + d * 5 - (d > 0 ? 0 : 5)), sy0 = Math.round(r.shy - 2);
+        D.rect(sx0, sy0, 5, 13, '#5A3A2A'); D.rect(sx0 + (d > 0 ? 4 : 0), sy0, 1, 13, '#3A2418'); D.rect(sx0 + 1, sy0 + 5, 3, 3, METAL);
+      }
     } else if (e.tipo === 'lancero') {
       const ang = golpe > 0 ? 0 : -Math.PI / 2 + (e.carga ? Math.PI / 2 : 0.2);
       const ux = Math.cos(ang) * d, uy = Math.sin(ang);
@@ -1113,7 +1486,8 @@ window.G = (() => {
 
   C.danar = (obj, cantidad, fuente) => {
     if (!obj.vivo) return 0;
-    const m = obj.bando === 'tropa' ? G.tropa.mult(obj) : 1;
+    let m = obj.bando === 'tropa' ? G.tropa.mult(obj) : 1;
+    if (obj.tipo === 'escudado' && fuente && fuente.tipo !== 'flecha' && !G.tropa.ej.cargado) m = 0.25;
     const d = Math.round(cantidad * m);
     if (d <= 0) {
       G.audio.sfx('escudo');
@@ -1137,8 +1511,13 @@ window.G = (() => {
       C.part.push({ x: obj.x + (Math.random() - 0.5) * (obj.tipo === 'jefe' ? 30 : 8), y: G.GY - Math.random() * alto,
         vx: (Math.random() - 0.5) * 40, vy: -20 - Math.random() * 50, vida: 0.8 + Math.random() * 0.8, col, suelo: true });
     }
+    if (obj.bando === 'enem') C.monedas(obj.x, G.enem.TIPOS[obj.tipo].monedas || 0);
     G.emit('muere', obj);
   }
+  // Monedas: saltan del enemigo y vuelan al marcador
+  C.monedas = (x, n) => {
+    for (let k = 0; k < Math.min(n, 12); k++) C.part.push({ x, y: G.GY - 14, vx: (Math.random() - 0.3) * 50, vy: -60 - Math.random() * 40, vida: 1.4, col: '#F2C14E', moneda: Math.ceil(n / Math.min(n, 12)), t: 0 });
+  };
   C.texto = (s, x, y, col) => C.textos.push({ s, x, y, col, vida: 0.8 });
   C.polvo = (x, n) => { for (let k = 0; k < n; k++) C.part.push({ x: x + (Math.random() - 0.5) * 40, y: G.GY - 1, vx: (Math.random() - 0.5) * 50, vy: -10 - Math.random() * 30, vida: 0.6, col: '#8A7A60' }); };
 
@@ -1179,6 +1558,12 @@ window.G = (() => {
     }
     C.proy = C.proy.filter((p) => p.vivo);
     for (const q of C.part) {
+      if (q.moneda) {                       // rebota y luego vuela al contador de monedas (arriba a la derecha)
+        q.t += dt;
+        if (q.t > 0.55) { const tx = G.camX + G.W - 60, ty = 20; q.x += (tx - q.x) * Math.min(1, dt * 7); q.y += (ty - q.y) * Math.min(1, dt * 7);
+          if (Math.abs(q.x - tx) < 6 && Math.abs(q.y - ty) < 6) { q.vida = 0; if (G.nivel && !G.nivel.fin) G.nivel.monedas += q.moneda; G.audio.sfx('moneda', 0.5); }
+          continue; }
+      }
       q.vida -= dt; q.vy += GRAV * dt; q.x += q.vx * dt; q.y += q.vy * dt;
       if (q.y > G.GY - 1) { q.y = G.GY - 1; q.vx *= 0.5; q.vy = 0; }
     }
@@ -1199,7 +1584,7 @@ window.G = (() => {
         D.rect(x - 3, G.GY - 3, 7, 3, '#8A7A60'); D.rect(x - 1, G.GY - 5, 3, 2, '#A89878');
       }
     }
-    for (const q of C.part) { G.ctx.globalAlpha = U.clamp(q.vida * 2, 0, 1); D.rect(q.x - G.camX, q.y, 1, 1, q.col); }
+    for (const q of C.part) { G.ctx.globalAlpha = q.moneda ? 1 : U.clamp(q.vida * 2, 0, 1); if (q.moneda) { D.rect(q.x - G.camX - 1, q.y - 1, 3, 3, '#F2C14E'); D.rect(q.x - G.camX, q.y - 1, 1, 1, '#FFF1A0'); } else D.rect(q.x - G.camX, q.y, 1, 1, q.col); }
     G.ctx.globalAlpha = 1;
   };
   C.dibujarTextos = () => {
@@ -1211,175 +1596,391 @@ window.G = (() => {
 </script>
 <script>
 // ---- 40_escena.js
-// 40_escena.js — cielo, parallax, suelo, hogueras, meta, clima, oscuridad con halos y el agua reutilizada.
+// 40_escena.js — biomas con fondos por capas pre-pintadas (perspectiva atmosférica), cielo con nubes y
+// rayos de luz, suelo detallado, hogueras, meta, campamento, clima y partículas, oscuridad con halos y
+// parámetros del agua (WebGL) o agua 2D de respaldo.
 (function (G) {
-  const U = G.u, D = G.d, W = G.W, H = G.H, WY = G.WY, GY = G.GY, ctx = G.ctx;
-  const FASES = {
-    dia:   { cielo: '#6FA3C9', hor: '#E8D7A8', mont: '#8FA7B8', arb: '#5D7A6A', mat: '#4E6B45', astro: '#FFF1C2', osc: 0, mul: '#FFFFFF' },
-    tarde: { cielo: '#4F5E92', hor: '#F2A462', mont: '#8A6A7A', arb: '#5E4A52', mat: '#4C3E3A', astro: '#FFC27A', osc: 0.55, mul: '#F6D2B4' },
-    noche: { cielo: '#23335E', hor: '#50608E', mont: '#2A3656', arb: '#1F2A38', mat: '#1A241E', astro: '#EEF2FF', osc: 1, mul: '#5A6894' },
-  };
-  const VIENTO = { despejado: 0.4, niebla: 0.2, lluvia: 0.8, tormenta: 1 };
-  const S = G.escena = { fase: 'dia', clima: 'despejado', viento: 0.4, fogatas: [], meta: null, largo: 1400, relampago: 0, proxRayo: 8 };
-  const agua = crearAgua({ ancho: W, alto: H, yAgua: WY });
-  const capa = G.lienzo(W, H);
-  const gotas = Array.from({ length: 140 }, (_, i) => ({ x: U.hash(i, 41) * (W + 60), y: U.hash(i, 42) * H, v: 260 + U.hash(i, 43) * 120 }));
-  let ondas = [];
+  const U = G.u, D = G.d, W = G.W, H = G.H, WY = G.WY, GY = G.GY;
+  const TW = 960;                               // ancho de las capas (se repiten sin costura)
+  const C = () => G.ctx;
 
-  function halo(w, h, col) {
-    const { c, x } = G.lienzo(w, h); x.fillStyle = col;
-    for (let k = 0; k < 5; k++) {
-      const f = 1 - k / 5, ax = w / 2 * f - 1, ay = h / 2 * f - 1; x.globalAlpha = k ? 0.24 : 0.12;
-      for (let yy = -Math.floor(ay); yy <= Math.floor(ay); yy++) { const hw = Math.floor(ax * Math.sqrt(1 - yy * yy / (ay * ay))); x.fillRect(Math.round(w / 2 - hw), Math.round(h / 2 + yy), hw * 2, 1); }
+  // ---------------- Biomas
+  const BIOMAS = {
+    pradera: { cielo: ['#4E8FD0', '#8EC6EE', '#F1E6C4'], astro: 'sol', sol: [372, 44], solC: '#FFF3C8', nubes: '#FFFFFF', rayos: 0.07,
+      capas: [['montanas', 0.04, 150, 70, '#9CB4CE', { nieve: '#F2F4FA' }], ['colinas', 0.1, 160, 26, '#8DB487'], ['frondosos', 0.2, 170, 0, '#6F9E68'],
+        ['abedules', 0.33, 174, 0, '#5A8A50'], ['arbustos', 0.52, 178, 0, '#44703C']],
+      suelo: { hierba: '#6FA046', hierba2: '#8CBC56', tierra: '#6A4A2C', tierra2: '#54391F', flores: ['#F4E27A', '#F29AB0', '#FFFFFF'] },
+      agua: '#3F7A8C', osc: 0, mul: '#FFFFFF', part: null, niebla: 0 },
+    otono: { cielo: ['#3D4A86', '#C9705E', '#F6C27A'], astro: 'sol', sol: [392, 112], solC: '#FFC27A', nubes: '#F4B89A', rayos: 0.1,
+      capas: [['montanas', 0.04, 150, 60, '#8E6E86', { nieve: '#E8C8C8' }], ['colinas', 0.1, 162, 22, '#9C6258'], ['frondosos', 0.2, 170, 0, '#B35A30', { alt: '#D4903A' }],
+        ['pinos', 0.33, 174, 0, '#5E3A38'], ['arbustos', 0.52, 178, 0, '#6E3A26', { alt: '#9A4A22' }]],
+      suelo: { hierba: '#8A7A3A', hierba2: '#B8903A', tierra: '#5E3E26', tierra2: '#4A2E1A', flores: ['#D8602A', '#E8A040'] },
+      agua: '#5A5068', osc: 0.35, mul: '#F6D2B4', part: 'hojas', niebla: 0 },
+    niebla: { cielo: ['#7C8C9C', '#AEB8BE', '#D2D6D2'], astro: null, nubes: '#DDE2E4', rayos: 0.05,
+      capas: [['pinos', 0.06, 150, 0, '#9AA6AE'], ['pinos', 0.14, 160, 0, '#7F8C94'], ['pinos', 0.24, 168, 0, '#62707A'], ['pinos', 0.38, 176, 0, '#46545E'], ['arbustos', 0.55, 178, 0, '#34423A']],
+      suelo: { hierba: '#4E6A44', hierba2: '#6A8456', tierra: '#4A3A2A', tierra2: '#3A2C1E', flores: ['#C8C0A8'] },
+      agua: '#4E5E62', osc: 0.15, mul: '#E4E8EC', part: null, niebla: 1 },
+    pantano: { cielo: ['#070B20', '#17234A', '#34466E'], astro: 'luna', sol: [360, 52], solC: '#DDE6FF', nubes: '#2A3658', rayos: 0, estrellas: true,
+      capas: [['colinas', 0.06, 158, 24, '#26365A'], ['sauces', 0.18, 170, 0, '#1E2E4A'], ['frondosos', 0.3, 174, 0, '#172440'], ['juncos', 0.5, 178, 0, '#101A2E']],
+      suelo: { hierba: '#3A5A3A', hierba2: '#4E7048', tierra: '#3A2E24', tierra2: '#2C2218', flores: ['#9AE8C0'] },
+      agua: '#1C3444', osc: 1, mul: '#5A6894', part: 'luciernagas', niebla: 0.4 },
+    nieve: { cielo: ['#43558A', '#D892A2', '#F8D4AE'], astro: 'sol', sol: [100, 120], solC: '#FFD0A0', nubes: '#F6D6D6', rayos: 0.09,
+      capas: [['montanas', 0.04, 140, 90, '#8E90BA', { nieve: '#FFFFFF', grande: true }], ['montanas', 0.1, 160, 40, '#7478A4', { nieve: '#EEF0FA' }],
+        ['pinos', 0.22, 170, 0, '#4A5A7A', { nieve: '#E6ECF6' }], ['pinos', 0.36, 176, 0, '#34405A', { nieve: '#DDE4F0' }]],
+      suelo: { hierba: '#E8EEF6', hierba2: '#FFFFFF', tierra: '#6A6A80', tierra2: '#54546A', flores: [] },
+      agua: '#4A6488', osc: 0.18, mul: '#EAE2F2', part: 'nieve', niebla: 0.2 },
+    tormenta: { cielo: ['#141824', '#262C3E', '#40465A'], astro: null, nubes: '#3A4050', rayos: 0, tormenta: true,
+      capas: [['montanas', 0.05, 150, 70, '#3A4054', { nieve: '#6A7084' }], ['pinos', 0.16, 166, 0, '#2A3040'], ['pinos', 0.3, 174, 0, '#1E2430'], ['arbustos', 0.5, 178, 0, '#161C24']],
+      suelo: { hierba: '#3A4A34', hierba2: '#4A5A40', tierra: '#3A3028', tierra2: '#2A221C', flores: [] },
+      agua: '#18242E', osc: 0.85, mul: '#626A8C', part: 'lluvia', niebla: 0 },
+    campamento: { cielo: ['#2E3A6E', '#B8686A', '#F4B070'], astro: 'sol', sol: [410, 128], solC: '#FFB070', nubes: '#E8A08A', rayos: 0.08,
+      capas: [['montanas', 0.04, 150, 55, '#7A6282', { nieve: '#E0C0C8' }], ['colinas', 0.1, 164, 20, '#7E5458'], ['pinos', 0.2, 170, 0, '#5A3E48'],
+        ['frondosos', 0.34, 175, 0, '#4E3A3A', { alt: '#6A4638' }]],
+      suelo: { hierba: '#6A7A3A', hierba2: '#8A9A48', tierra: '#5A3E26', tierra2: '#46301D', flores: ['#F2C14E'] },
+      agua: '#4A4A62', osc: 0.45, mul: '#F2C8B0', part: 'luciernagas', niebla: 0 },
+  };
+  const S = G.escena = { bioma: 'pradera', B: BIOMAS.pradera, clima: 'despejado', viento: 0.4, fogatas: [], props: [], meta: null, largo: 1400,
+    relampago: 0, proxRayo: 6, ondas: [], BIOMAS };
+  const cacheCapas = {};
+  let particulas = [];
+
+  // ---------------- Pintado de capas (una vez por bioma)
+  function pnoise(x, periodo, seed) {       // ruido 1D periódico (sin costura en el borde de la capa)
+    const i = Math.floor(x), f = x - i, a = U.hash(((i % periodo) + periodo) % periodo, 0, seed), b = U.hash((((i + 1) % periodo) + periodo) % periodo, 0, seed);
+    return U.lerp(a, b, f * f * (3 - 2 * f));
+  }
+  const niebla = (col, k, B) => U.mix(col, B.cielo[2], k);
+  function pintarCapa(tipo, base, alto, col, op, B, seed) {
+    const { c, x } = G.lienzo(TW, WY);
+    const luz = U.mix(col, B.cielo[2], 0.35), sombra = U.shade(col, 0.82);
+    const envolver = (fn, px, ancho) => { fn(px); if (px < ancho) fn(px + TW); if (px > TW - ancho) fn(px - TW); };
+    if (tipo === 'montanas' || tipo === 'colinas') {
+      const per = tipo === 'montanas' ? 12 : 16, esc = TW / per;
+      const altura = (px) => {
+        const u = px / esc;
+        const h = pnoise(u, per, seed) * 0.6 + pnoise(u * 3, per * 3, seed + 1) * 0.28 + pnoise(u * 9, per * 9, seed + 2) * 0.12;
+        return tipo === 'montanas' ? Math.pow(h, 1.4) * (op && op.grande ? 1.25 : 1) : h;
+      };
+      for (let px = 0; px < TW; px++) {
+        const h = altura(px), top = Math.round(base - h * alto);
+        const pend = altura(px + 1) - h;           // lado iluminado según la pendiente
+        x.fillStyle = pend > 0 ? luz : col; x.fillRect(px, top, 1, WY - top);
+        if (tipo === 'montanas' && op && op.nieve) {
+          const lim = base - alto * 0.62;
+          if (top < lim) { const n = Math.round((lim - top) * 0.8 + U.hash(px, 3, seed) * 3); x.fillStyle = pend > 0 ? op.nieve : U.shade(op.nieve, 0.88); x.fillRect(px, top, 1, n); }
+        }
+        if (tipo === 'colinas' && U.hash(px, 9, seed) < 0.3) { x.fillStyle = luz; x.fillRect(px, top - 1, 1, 1); }
+      }
+      return c;
+    }
+    // Suelo base de la capa (para que no se vea el cielo bajo los árboles)
+    x.fillStyle = col; x.fillRect(0, base - 2, TW, WY - base + 2);
+    const rnd = U.rng(seed * 977 + 13);
+    if (tipo === 'pinos') {
+      for (let px = 0; px < TW; px += 5 + Math.floor(rnd() * 7)) {
+        const h = 24 + Math.floor(rnd() * 34), w = 7 + Math.floor(h / 6), tono = rnd() < 0.3 ? sombra : col;
+        envolver((X) => {
+          x.fillStyle = U.shade(tono, 0.7); x.fillRect(X, base - 4, 2, 6);
+          for (let y = 0; y < h; y++) {
+            const k = y / h, capa = (y % 7) / 7, hw = Math.max(0, Math.round((k * 0.85 + 0.15) * w * (0.75 + capa * 0.35)));
+            x.fillStyle = tono; x.fillRect(X - hw, base - h + y, hw * 2 + 1, 1);
+            if (hw > 1) { x.fillStyle = luz; x.fillRect(X + hw - 1, base - h + y, 1, 1); }
+            if (op && op.nieve && capa < 0.3 && hw > 1) { x.fillStyle = op.nieve; x.fillRect(X - hw + 1, base - h + y, hw * 2 - 1, 1); }
+          }
+        }, px, w + 2);
+      }
+    } else if (tipo === 'frondosos' || tipo === 'abedules' || tipo === 'arbustos') {
+      const arbusto = tipo === 'arbustos';
+      for (let px = 0; px < TW; px += (arbusto ? 9 : 16) + Math.floor(rnd() * (arbusto ? 10 : 18))) {
+        const h = arbusto ? 3 + Math.floor(rnd() * 5) : 20 + Math.floor(rnd() * 26), r = arbusto ? 5 + Math.floor(rnd() * 5) : 7 + Math.floor(rnd() * 7);
+        const tono = op && op.alt && rnd() < 0.45 ? op.alt : rnd() < 0.3 ? sombra : col;
+        envolver((X) => {
+          if (!arbusto) {
+            if (tipo === 'abedules') { x.fillStyle = niebla('#E8E4DA', 0.3, B); x.fillRect(X, base - h, 2, h + 2); for (let y = 3; y < h; y += 4 + (y % 3)) { x.fillStyle = '#3A3A3A'; x.fillRect(X, base - h + y, 1, 1); } }
+            else { x.fillStyle = U.shade(col, 0.6); x.fillRect(X, base - h, 3, h + 2); x.fillRect(X - 3, base - h * 0.5, 3, 1); }
+          }
+          const cy = base - h - (arbusto ? 0 : r * 0.4);
+          const blobs = arbusto ? 3 : 6;
+          for (let k = 0; k < blobs; k++) {
+            const bx = X + Math.round((U.hash(k, X, seed) - 0.5) * r * 1.6), by = Math.round(cy + (U.hash(k, X + 7, seed) - 0.3) * r);
+            D.disco(bx, by, Math.max(2, Math.round(r * (0.55 + U.hash(k, X + 3, seed) * 0.35))), tono, x);
+          }
+          // luz de borde arriba a la derecha y textura de hojas
+          D.disco(X + Math.round(r * 0.35), Math.round(cy - r * 0.35), Math.max(2, Math.round(r * 0.45)), U.mix(tono, luz, 0.6), x);
+          for (let k = 0; k < r * 3; k++) { const a = U.hash(k, X, seed + 5) * 6.28, rr = r * (0.6 + U.hash(k, X, seed + 6) * 0.5); x.fillStyle = U.hash(k, X, seed + 8) < 0.5 ? luz : sombra; x.fillRect(Math.round(X + Math.cos(a) * rr), Math.round(cy + Math.sin(a) * rr * 0.8), 1, 1); }
+        }, px, r * 2);
+      }
+    } else if (tipo === 'sauces') {
+      for (let px = 0; px < TW; px += 22 + Math.floor(rnd() * 26)) {
+        const h = 26 + Math.floor(rnd() * 16), r = 10 + Math.floor(rnd() * 5);
+        envolver((X) => {
+          x.fillStyle = U.shade(col, 0.7); x.fillRect(X, base - h, 3, h + 2);
+          D.disco(X + 1, base - h, r, col, x);
+          for (let k = -r; k <= r; k += 2) { const l = 8 + Math.floor(U.hash(k, X, seed) * 14); x.fillStyle = k % 4 ? col : luz; x.fillRect(X + 1 + k, base - h, 1, l + Math.round(r - Math.abs(k))); }
+        }, px, r + 2);
+      }
+    } else if (tipo === 'juncos') {
+      for (let px = 0; px < TW; px += 2 + Math.floor(rnd() * 4)) {
+        const h = 6 + Math.floor(rnd() * 14);
+        x.fillStyle = rnd() < 0.3 ? luz : col; x.fillRect(px, base - h, 1, h + 2);
+        if (rnd() < 0.15) { x.fillStyle = U.shade(col, 0.6); x.fillRect(px, base - h - 3, 2, 4); }
+      }
     }
     return c;
   }
-  const HALOS = { fogata: { c: halo(220, 120, '#FFB070'), n: 12, nc: '#FFD8A8', tam: 'grande' }, farol: { c: halo(110, 62, '#FFC48A'), n: 4, nc: '#FFE0B0', tam: 'chica' } };
+  function capasDe(nombre) {
+    if (cacheCapas[nombre]) return cacheCapas[nombre];
+    const B = BIOMAS[nombre];
+    const n = B.capas.length;
+    cacheCapas[nombre] = B.capas.map(([tipo, f, base, alto, col, op], i) => {
+      const k = 0.55 * (1 - i / Math.max(1, n - 1));        // bruma mayor en las capas lejanas
+      return { f, c: pintarCapa(tipo, base, alto, niebla(col, k * 0.6, B), op, B, 101 + i * 17 + nombre.length) };
+    });
+    return cacheCapas[nombre];
+  }
+  // Nubes (sprites)
+  const NUBES = Array.from({ length: 6 }, (_, i) => {
+    const w = 60 + i * 12, h = 22, { c, x } = G.lienzo(w, h);
+    for (let k = 0; k < 7; k++) D.disco(Math.round(10 + (w - 20) * k / 6), Math.round(h - 8 - Math.sin(k / 6 * Math.PI) * 6 - U.hash(k, i) * 3), 5 + Math.round(Math.sin(k / 6 * Math.PI) * 5), '#FFFFFF', x);
+    x.fillRect(6, h - 8, w - 12, 6);
+    return c;
+  });
 
+  S._capas = (n) => capasDe(n);
   S.configurar = (d) => {
-    S.fase = d.fase || 'dia'; S.clima = d.clima || 'despejado'; S.viento = VIENTO[S.clima];
-    S.fogatas = d.fogatas || []; S.meta = d.meta || null; S.largo = d.largo || 1400; S.relampago = 0; S.proxRayo = 5;
+    S.bioma = d.bioma || 'pradera'; S.B = BIOMAS[S.bioma];
+    S.clima = d.clima || (S.B.tormenta ? 'tormenta' : 'despejado');
+    S.viento = { despejado: 0.4, niebla: 0.2, lluvia: 0.8, tormenta: 1 }[S.clima] ?? 0.4;
+    S.fogatas = d.fogatas || []; S.props = d.props || []; S.meta = d.meta ?? null; S.largo = d.largo || 1400;
+    S.relampago = 0; S.proxRayo = 5; S.ondas = []; particulas = [];
+    capasDe(S.bioma);
   };
-  const F = () => FASES[S.fase];
 
-  // ---- Fondo
+  // ---------------- Cielo
   function cielo() {
-    const f = F();
-    for (let y = 0; y < WY; y++) { ctx.fillStyle = U.mix(f.cielo, f.hor, Math.pow(y / WY, 1.4)); ctx.fillRect(0, y, W, 1); }
-    if (S.fase === 'noche') for (let i = 0; i < 70; i++) { ctx.globalAlpha = 0.5 + 0.5 * Math.sin(G.t * 2 + i); D.rect(Math.floor(U.hash(i, 1) * W), Math.floor(U.hash(i, 2) * 110), 1, 1, '#E8EEFF'); }
-    ctx.globalAlpha = 1;
-    if (S.clima === 'despejado' || S.clima === 'niebla') {
-      const ax = S.fase === 'tarde' ? 390 : 380, ay = S.fase === 'tarde' ? 118 : 46;
-      ctx.globalAlpha = 0.25; D.disco(ax, ay, 13, f.astro); ctx.globalAlpha = 1; D.disco(ax, ay, 9, f.astro);
-    } else {
-      // nubes bajas de tormenta
-      for (let k = 0; k < 7; k++) { const x = ((k * 90 - G.camX * 0.05 - G.t * 4) % 560 + 560) % 560 - 60; ctx.globalAlpha = 0.5; D.disco(x, 30 + (k % 3) * 12, 22 + (k % 2) * 8, U.shade(f.cielo, 0.8)); }
+    const B = S.B, ctx = C(), [a, b, c] = B.cielo;
+    for (let y = 0; y < WY; y++) {
+      const k = y / WY; ctx.fillStyle = k < 0.55 ? U.mix(a, b, Math.pow(k / 0.55, 1.2)) : U.mix(b, c, (k - 0.55) / 0.45);
+      ctx.fillRect(0, y, W, 1);
+    }
+    if (B.estrellas) {
+      for (let i = 0; i < 110; i++) { ctx.globalAlpha = (0.4 + 0.6 * Math.abs(Math.sin(G.t * 1.3 + i * 7))) * (i % 5 ? 0.6 : 1); D.rect(Math.floor(U.hash(i, 1) * W), Math.floor(U.hash(i, 2) * 120), 1, 1, i % 7 ? '#CFE0FF' : '#FFFFFF'); }
+      // aurora suave
+      for (let x = 0; x < W; x += 2) { const h = 10 + U.noise1(x * 0.02 + G.t * 0.1, 5) * 26; ctx.globalAlpha = 0.07; D.rect(x, 26 + U.noise1(x * 0.01 + G.t * 0.05, 6) * 20, 2, h, x % 6 ? '#5AE0A8' : '#7A9AF0'); }
       ctx.globalAlpha = 1;
     }
-    if (S.relampago > 0) { ctx.globalAlpha = S.relampago * 2.5; D.rect(0, 0, W, WY, '#E8ECFF'); ctx.globalAlpha = 1; }
-  }
-  function sierra(f, y0, alto, paso, col, seed) {
-    ctx.fillStyle = col;
-    const cam = G.camX * f, off = ((cam % paso) + paso) % paso, base = Math.floor(cam / paso);
-    for (let x = 0; x < W; x++) {
-      const wx = x + off, i = Math.floor(wx / paso), u = (wx % paso) / paso;
-      const h = Math.round(U.lerp(U.hash(i + base, seed), U.hash(i + base + 1, seed), u * u * (3 - 2 * u)) * alto);
-      ctx.fillRect(x, y0 - h, 1, WY - (y0 - h));
+    if (B.astro) {
+      const [sx, sy] = B.sol;
+      for (let r = 34; r > 10; r -= 6) { ctx.globalAlpha = 0.06; D.disco(sx, sy, r, B.solC); }
+      ctx.globalAlpha = 1; D.disco(sx, sy, B.astro === 'luna' ? 9 : 10, B.solC);
+      if (B.astro === 'luna') { D.disco(sx - 3, sy - 2, 2, U.shade(B.solC, 0.85)); D.disco(sx + 3, sy + 3, 1, U.shade(B.solC, 0.85)); }
     }
-  }
-  function arboles(f, y0, col, seed, sep) {
-    const cam = G.camX * f;
-    for (let k = -1; k < W / sep + 2; k++) {
-      const i = k + Math.floor(cam / sep), x = Math.round(i * sep - cam + U.hash(i, seed) * sep * 0.6);
-      const h = 26 + Math.floor(U.hash(i, seed + 1) * 22);
-      D.rect(x, y0 - h, 3, h, col);
-      D.disco(x + 1, y0 - h, 8 + Math.floor(U.hash(i, seed + 2) * 5), col);
+    // nubes con parallax y deriva
+    for (let i = 0; i < 7; i++) {
+      const n = NUBES[i % NUBES.length], vel = 3 + i * 0.7;
+      const x = ((i * 137 - G.camX * (0.02 + i * 0.004) - G.t * vel) % (W + 200) + W + 200) % (W + 200) - 100;
+      ctx.globalAlpha = B.tormenta ? 0.55 : 0.28 + (i % 3) * 0.08;
+      ctx.drawImage(n, Math.round(x), 8 + (i * 23) % 70);
+      if (B.tormenta) { ctx.drawImage(n, Math.round(x + 40), (i * 17) % 40); }
     }
+    ctx.globalAlpha = 1;
+    if (B.tormenta) { ctx.globalAlpha = 0.35; D.rect(0, 0, W, 70, B.nubes); ctx.globalAlpha = 1; }
+    if (S.relampago > 0) { ctx.globalAlpha = Math.min(1, S.relampago * 3); D.rect(0, 0, W, WY, '#E8ECFF'); ctx.globalAlpha = 1; }
   }
-  function suelo() {
-    const cam = G.camX;
-    D.rect(0, GY, W, WY - GY, '#5A3E26');
-    const o8 = ((cam % 8) + 8) % 8;
-    for (let x = -8; x < W + 8; x += 8) { const i = Math.floor((x + cam) / 8); D.rect(x - o8, GY + 5 + Math.floor(U.hash(i, 7) * 7), 4, 2, '#46301D'); }
-    D.rect(0, GY, W, 2, '#6E8A3C');
-    for (let x = 0; x < W; x++) {
-      const i = Math.floor(x + cam);
-      if (U.hash(i, 9) < 0.35) {
-        const h = 1 + Math.floor(U.hash(i, 10) * 3 * (0.6 + 0.4 * Math.sin(G.t * 3 * S.viento + i * 0.3)));
-        D.rect(x, GY - h, 1, h + 1, '#6E8A3C');
+  // Rayos de luz: haces anchos y muy suaves que bajan del sol y se desvanecen
+  function rayosDeLuz() {
+    const B = S.B; if (!B.rayos || !B.astro || B.astro === 'luna') return;
+    const ctx = C(), [sx, sy] = B.sol;
+    ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = B.solC;
+    for (let k = 0; k < 4; k++) {
+      const ang = Math.PI / 2 + (k - 1.5) * 0.28 + Math.sin(G.t * 0.15 + k) * 0.03, base = 10 + k * 4;
+      for (let d = 12; d < 170; d += 3) {
+        const x = sx + Math.cos(ang) * d, y = sy + Math.sin(ang) * d;
+        if (y > GY) break;
+        ctx.globalAlpha = B.rayos * 0.45 * (1 - d / 170) * (0.6 + 0.4 * Math.sin(G.t * 0.4 + k * 2));
+        const w = Math.round(base + d * 0.18);
+        ctx.fillRect(Math.round(x - w / 2), Math.round(y), w, 3);
       }
     }
-    // piedras y postes
-    for (let k = -1; k < W / 90 + 2; k++) {
-      const i = k + Math.floor(cam / 90), x = Math.round(i * 90 + U.hash(i, 4) * 50 - cam);
-      if (U.hash(i, 5) < 0.5) D.disco(x, GY - 2, 3, '#7B7D78'); else if (U.hash(i, 6) < 0.4) D.rect(x, GY - 14, 2, 14, '#5B4430');
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  }
+  function capas() {
+    const ctx = C();
+    for (const L of capasDe(S.bioma)) {
+      const off = ((G.camX * L.f) % TW + TW) % TW;
+      ctx.drawImage(L.c, -Math.round(off), 0); ctx.drawImage(L.c, TW - Math.round(off), 0);
+      if (S.B.niebla > 0.5) { ctx.globalAlpha = 0.18; D.rect(0, 120, W, 60, S.B.cielo[2]); ctx.globalAlpha = 1; }
     }
   }
+  // ---------------- Suelo
+  function suelo() {
+    const B = S.B.suelo, cam = G.camX, ctx = C();
+    D.rect(0, GY, W, WY - GY, B.tierra);
+    const o8 = ((cam % 8) + 8) % 8;
+    for (let x = -8; x < W + 8; x += 8) { const i = Math.floor((x + cam) / 8); D.rect(x - o8, GY + 5 + Math.floor(U.hash(i, 7) * 7), 3 + Math.floor(U.hash(i, 8) * 3), 2, B.tierra2); if (U.hash(i, 12) < 0.2) D.rect(x - o8 + 4, GY + 10, 2, 1, U.shade(B.tierra, 1.2)); }
+    D.rect(0, GY, W, 3, B.hierba); D.rect(0, GY + 3, W, 1, U.shade(B.hierba, 0.75));
+    for (let x = 0; x < W; x++) {
+      const i = Math.floor(x + cam);
+      if (U.hash(i, 9) < 0.45) {
+        const h = 1 + Math.floor(U.hash(i, 10) * 4 * (0.7 + 0.3 * Math.sin(G.t * 2.5 * S.viento + i * 0.3)));
+        D.rect(x, GY - h, 1, h + 1, U.hash(i, 11) < 0.5 ? B.hierba : B.hierba2);
+      }
+      if (B.flores.length && U.hash(i, 13) < 0.025) { const f = B.flores[Math.floor(U.hash(i, 14) * B.flores.length)]; D.rect(x, GY - 3 - Math.floor(U.hash(i, 15) * 2), 1, 1, f); D.rect(x, GY - 2, 1, 2, B.hierba); }
+    }
+    for (let k = -1; k < W / 70 + 2; k++) {
+      const i = k + Math.floor(cam / 70), x = Math.round(i * 70 + U.hash(i, 4) * 40 - cam);
+      if (U.hash(i, 5) < 0.3) { D.disco(x, GY - 1, 3, '#7B7D78'); D.rect(x - 1, GY - 3, 2, 1, '#A0A29C'); }
+      else if (U.hash(i, 6) < 0.25 && S.bioma === 'niebla') { D.rect(x, GY - 3, 1, 3, '#E8E0D0'); D.rect(x - 1, GY - 4, 3, 1, '#C8402A'); }
+    }
+  }
+  // ---------------- Objetos del nivel
   function fogata(xw) {
-    const x = Math.round(xw - G.camX);
-    if (x < -20 || x > W + 20) return;
-    D.rect(x - 5, GY - 3, 11, 3, '#3A2A1E'); D.rect(x - 4, GY - 4, 2, 1, '#5B4430'); D.rect(x + 2, GY - 4, 2, 1, '#5B4430');
+    const x = Math.round(xw - G.camX); if (x < -20 || x > W + 20) return;
+    D.rect(x - 6, GY - 2, 13, 2, '#4A4A48'); D.rect(x - 5, GY - 4, 4, 2, '#5B4430'); D.rect(x + 2, GY - 4, 4, 2, '#5B4430');
     const f = Math.floor(G.t * 10 + xw) % 3;
-    D.rect(x - 3, GY - 9 - f, 7, 6 + f, '#E8742A'); D.rect(x - 2, GY - 11 - (f === 1 ? 1 : 0), 5, 5, '#F2A33A'); D.rect(x - 1, GY - 9, 3, 4, '#FFE39A');
-    if (U.hash(Math.floor(G.t * 12), xw) < 0.5) D.rect(x - 2 + Math.floor(U.hash(Math.floor(G.t * 12), xw + 1) * 5), GY - 14 - Math.floor((G.t * 20) % 6), 1, 1, '#FFB060');
+    D.rect(x - 3, GY - 9 - f, 7, 6 + f, '#E8742A'); D.rect(x - 2, GY - 12 - (f === 1 ? 1 : 0), 5, 6, '#F2A33A'); D.rect(x - 1, GY - 9, 3, 4, '#FFE39A');
+    for (let k = 0; k < 3; k++) { const a = (G.t * 1.5 + k / 3 + xw) % 1; C().globalAlpha = 1 - a; D.rect(x - 1 + Math.round(Math.sin(a * 9 + k) * 3), GY - 14 - Math.round(a * 18), 1, 1, '#FFB060'); }
+    C().globalAlpha = 1;
     G.luces.push({ x: xw, y: GY - 7, tipo: 'fogata' });
   }
   function meta() {
     if (S.meta === null) return;
-    const x = Math.round(S.meta - G.camX);
-    if (x < -40 || x > W + 40) return;
-    D.rect(x, GY - 58, 2, 58, '#4A3A2A'); D.rect(x - 1, GY - 60, 4, 2, '#F2C14E');
-    for (let i = 0; i < 16; i++) { const ond = Math.round(Math.sin(G.t * 5 - i * 0.5) * (i / 16) * 2); D.rect(x + 2 + i, GY - 56 + ond, 1, 12, i % 8 < 4 ? '#F4F1E6' : '#E4DCC8'); }
-    D.disco(x + 10, GY - 50 + Math.round(Math.sin(G.t * 5 - 4) * 1), 2, '#F2C14E');
-    D.rect(x - 8, GY - 4, 18, 4, '#7B7D78');
-    G.luces.push({ x: S.meta + 1, y: GY - 60, tipo: 'farol' });
+    const x = Math.round(S.meta - G.camX); if (x < -40 || x > W + 40) return;
+    D.rect(x - 10, GY - 6, 22, 6, '#6A6C68'); D.rect(x - 8, GY - 8, 18, 2, '#8A8C86');
+    D.rect(x, GY - 62, 2, 56, '#4A3A2A'); D.rect(x - 1, GY - 64, 4, 2, '#F2C14E');
+    for (let i = 0; i < 18; i++) { const ond = Math.round(Math.sin(G.t * 5 - i * 0.5) * (i / 18) * 2); D.rect(x + 2 + i, GY - 60 + ond, 1, 13 - (i > 14 ? (i - 14) * 3 : 0), i % 9 < 5 ? '#F4F1E6' : '#E4DCC8'); }
+    D.disco(x + 10, GY - 54 + Math.round(Math.sin(G.t * 5 - 4)), 2, '#F2C14E');
+    G.luces.push({ x: S.meta + 1, y: GY - 64, tipo: 'farol' });
+  }
+  function prop(p) {
+    const x = Math.round(p.x - G.camX); if (x < -60 || x > W + 60) return;
+    if (p.tipo === 'tienda') {
+      const col = p.col || '#C8A870', osc = U.shade(col, 0.7);
+      for (let y = 0; y < 26; y++) { const hw = Math.round(y * 0.8) + 2; D.rect(x - hw, GY - 26 + y, hw * 2 + 1, 1, y % 5 === 0 ? osc : col); }
+      D.rect(x - 3, GY - 12, 7, 12, '#2A1E16'); D.rect(x, GY - 30, 1, 5, '#4A3A2A'); D.rect(x + 1, GY - 30, 5, 3, p.bandera || '#B8322A');
+    } else if (p.tipo === 'yunque') {
+      D.rect(x - 6, GY - 8, 12, 3, '#3A3C44'); D.rect(x - 3, GY - 5, 6, 5, '#2A2C34'); D.rect(x - 8, GY - 8, 3, 2, '#3A3C44');
+      if (Math.floor(G.t * 2) % 4 === 0) { D.rect(x - 1, GY - 11, 1, 1, '#FFD27A'); D.rect(x + 2, GY - 12, 1, 1, '#FFB060'); }
+      D.rect(x + 10, GY - 14, 8, 14, '#5A3A2A'); D.rect(x + 11, GY - 12, 6, 6, '#E8742A');
+      G.luces.push({ x: p.x + 14, y: GY - 9, tipo: 'farol' });
+    } else if (p.tipo === 'maniqui') {
+      D.rect(x, GY - 20, 2, 20, '#6A4A30'); D.rect(x - 5, GY - 16, 12, 2, '#6A4A30'); D.disco(x + 1, GY - 22, 3, '#C8A870'); D.rect(x - 3, GY - 14, 8, 8, '#C8A870');
+    } else if (p.tipo === 'carro') {
+      D.rect(x - 14, GY - 12, 28, 6, '#6A4A30'); D.disco(x - 9, GY - 5, 4, '#3A2A1E'); D.disco(x + 9, GY - 5, 4, '#3A2A1E'); D.rect(x - 12, GY - 18, 24, 6, '#C8B080');
+    } else if (p.tipo === 'estandarte') {
+      D.rect(x, GY - 44, 2, 44, '#4A3A2A');
+      for (let i = 0; i < 10; i++) D.rect(x + 2, GY - 42 + i, 10, 1, i < 8 ? '#B8322A' : '#8A2420'); D.disco(x + 7, GY - 38, 2, '#F2C14E');
+    }
   }
 
   S.dibujarFondo = () => {
-    const f = F();
     cielo();
-    sierra(0.1, 130, 40, 60, f.mont, 1);
-    arboles(0.3, 168, f.arb, 20, 26);
-    sierra(0.5, 172, 10, 30, f.mat, 2);
+    capas();
     suelo();
     meta();
+    for (const p of S.props) prop(p);
     for (const x of S.fogatas) fogata(x);
   };
 
-  // ---- Oscuridad (multiply) con halos; luna y estrellas perforadas para que no se apaguen
+  // ---------------- Partículas del bioma
+  function particulasBioma(dt, ctx) {
+    const tipo = S.clima === 'lluvia' || S.clima === 'tormenta' ? null : S.B.part;
+    if (!tipo) return;
+    if (particulas.length < (tipo === 'nieve' ? 90 : tipo === 'hojas' ? 26 : 30)) {
+      particulas.push({ x: Math.random() * (W + 40) - 20, y: tipo === 'luciernagas' ? 120 + Math.random() * 60 : -5, v: Math.random(), f: Math.random() * 6 });
+    }
+    for (const p of particulas) {
+      p.f += dt;
+      if (tipo === 'nieve') { p.y += (14 + p.v * 16) * dt; p.x += (Math.sin(p.f * 1.5) * 6 - 8 * S.viento) * dt; D.rect(p.x, p.y, p.v > 0.7 ? 2 : 1, p.v > 0.7 ? 2 : 1, '#FFFFFF', ctx); }
+      else if (tipo === 'hojas') { p.y += (18 + p.v * 12) * dt; p.x += (Math.sin(p.f * 2) * 14 - 12) * dt; D.rect(p.x, p.y, 2, 1, p.v > 0.5 ? '#D8602A' : '#E8A040', ctx); D.rect(p.x + (Math.sin(p.f * 4) > 0 ? 1 : 0), p.y + 1, 1, 1, '#B8401A', ctx); }
+      else { p.x += Math.sin(p.f * 0.8 + p.v * 9) * 8 * dt; p.y += Math.cos(p.f * 0.6 + p.v * 5) * 5 * dt; ctx.globalAlpha = 0.5 + 0.5 * Math.sin(p.f * 3 + p.v * 20); D.rect(p.x, p.y, 1, 1, '#B8FFA0', ctx); ctx.globalAlpha = 1; if (p.f > 12) p.y = 999; }
+      if (p.y > GY + 2 || p.x < -30) p.y = 999;
+    }
+    particulas = particulas.filter((p) => p.y < 900);
+  }
+
+  // ---------------- Oscuridad
+  const capaOsc = G.lienzo(W, H);
+  function halo(w, h, col) {
+    const { c, x } = G.lienzo(w, h); x.fillStyle = col;
+    for (let k = 0; k < 6; k++) {
+      const f = 1 - k / 6, ax = w / 2 * f - 1, ay = h / 2 * f - 1; x.globalAlpha = k ? 0.2 : 0.1;
+      for (let yy = -Math.floor(ay); yy <= Math.floor(ay); yy++) { const hw = Math.floor(ax * Math.sqrt(1 - yy * yy / (ay * ay))); x.fillRect(Math.round(w / 2 - hw), Math.round(h / 2 + yy), hw * 2, 1); }
+    }
+    return c;
+  }
+  const HALOS = { fogata: { c: halo(230, 130, '#FFB070'), n: 12, nc: '#FFD8A8', ancho: 9, fuerza: 1 }, farol: { c: halo(110, 64, '#FFC48A'), n: 4, nc: '#FFE0B0', ancho: 4.5, fuerza: 0.75 } };
   S.oscuridad = () => {
-    const f = F();
-    if (f.osc <= 0 && S.clima !== 'tormenta') return;
-    const c = capa.x, mul = S.clima === 'tormenta' && S.fase !== 'noche' ? '#9AA2B8' : f.mul;
-    c.globalCompositeOperation = 'source-over'; c.globalAlpha = 1; c.fillStyle = mul; c.fillRect(0, 0, W, H);
+    const B = S.B, osc = B.osc;
+    if (osc <= 0 && S.relampago <= 0) return;
+    const c = capaOsc.x, ctx = C();
+    c.globalCompositeOperation = 'source-over'; c.globalAlpha = 1; c.fillStyle = B.mul; c.fillRect(0, 0, W, H);
     c.globalCompositeOperation = 'screen';
     for (const L of G.luces) {
       const h = HALOS[L.tipo]; if (!h) continue;
       const x = L.x - G.camX, hw = h.c.width, hh = h.c.height;
       if (x + hw / 2 < 0 || x - hw / 2 > W) continue;
-      c.globalAlpha = f.osc * (0.85 + 0.15 * Math.sin(G.t * 17 + L.x));
+      c.globalAlpha = osc * (0.85 + 0.15 * Math.sin(G.t * 17 + L.x));
       const x0 = Math.round(x - hw / 2), y0 = Math.round(L.y - hh / 2), corte = Math.max(0, 100 - y0);
       if (corte < hh) c.drawImage(h.c, 0, corte, hw, hh - corte, x0, y0 + corte, hw, hh - corte);
       D.disco(x, L.y, h.n, h.nc, c);
     }
-    if (S.fase === 'noche' && S.clima !== 'tormenta' && S.clima !== 'lluvia') {
-      c.globalCompositeOperation = 'source-over'; c.globalAlpha = 1;
-      D.disco(380, 46, 9, '#FFFFFF', c);
-      c.fillStyle = '#FFFFFF';
-      for (let i = 0; i < 70; i++) c.fillRect(Math.floor(U.hash(i, 1) * W), Math.floor(U.hash(i, 2) * 110), 1, 1);
+    c.globalCompositeOperation = 'source-over';
+    if (B.estrellas || B.astro === 'luna') {                 // luna y estrellas no se oscurecen
+      c.globalAlpha = 1; c.fillStyle = '#FFFFFF';
+      if (B.astro) D.disco(B.sol[0], B.sol[1], 10, '#FFFFFF', c);
+      for (let i = 0; i < 110; i++) c.fillRect(Math.floor(U.hash(i, 1) * W), Math.floor(U.hash(i, 2) * 120), 1, 1);
     }
-    if (S.relampago > 0) { c.globalCompositeOperation = 'source-over'; c.globalAlpha = Math.min(1, S.relampago * 4); c.fillStyle = '#FFFFFF'; c.fillRect(0, 0, W, H); }
-    c.globalAlpha = 1; c.globalCompositeOperation = 'source-over';
-    ctx.globalCompositeOperation = 'multiply'; ctx.drawImage(capa.c, 0, 0); ctx.globalCompositeOperation = 'source-over';
+    if (S.relampago > 0) { c.globalAlpha = Math.min(1, S.relampago * 4); c.fillStyle = '#FFFFFF'; c.fillRect(0, 0, W, H); }
+    c.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'multiply'; ctx.drawImage(capaOsc.c, 0, 0); ctx.globalCompositeOperation = 'source-over';
   };
-
-  // ---- Niebla baja (antes del agua, así también se refleja)
-  S.niebla = () => {
-    if (S.clima !== 'niebla') return;
-    const col = S.fase === 'noche' ? '#8A94B0' : '#D8D4C8';
-    for (let k = 0; k < 3; k++) {
-      ctx.globalAlpha = 0.16 + k * 0.05;
-      const off = ((G.t * (6 + k * 4) + G.camX * (0.6 + k * 0.3)) % 64 + 64) % 64;
-      for (let x = -64; x < W + 64; x += 8) {
-        const i = Math.floor((x + off + k * 1000) / 8), h = 6 + Math.floor(U.noise1(i * 0.3 + G.t * 0.2, k) * 10);
-        D.rect(x - off, GY - 4 - h - k * 6, 8, h + 6, col);
+  // Después de la oscuridad (se reflejan en el agua): niebla baja y partículas brillantes
+  S.despues = (dt) => {
+    const ctx = C(), B = S.B;
+    if (B.niebla > 0 || S.clima === 'niebla') {
+      const col = B.osc > 0.5 ? '#6A7898' : U.mix(B.cielo[2], '#FFFFFF', 0.3), fuerza = Math.max(B.niebla, S.clima === 'niebla' ? 1 : 0);
+      for (let k = 0; k < 3; k++) {
+        ctx.globalAlpha = (0.1 + k * 0.05) * fuerza;
+        const off = ((G.t * (5 + k * 4) + G.camX * (0.6 + k * 0.3)) % 64 + 64) % 64;
+        for (let x = -64; x < W + 64; x += 8) {
+          const i = Math.floor((x + off + k * 1000) / 8), h = 6 + Math.floor(U.noise1(i * 0.3 + G.t * 0.2, k) * 12);
+          D.rect(x - off, GY - 4 - h - k * 7, 8, h + 7, col);
+        }
       }
+      ctx.globalAlpha = 1;
     }
-    ctx.globalAlpha = 1;
+    particulasBioma(dt, ctx);
   };
 
-  S.agua = () => {
-    const f = F();
+  // ---------------- Agua: parámetros para WebGL o agua 2D de respaldo
+  const agua2D = crearAgua({ ancho: W, alto: H, yAgua: WY, color: '#4E6A70' });
+  S.paramsAgua = () => {
+    const B = S.B, fz = U.clamp(B.osc * 1.3, 0, 1);
     const luces = [];
-    for (const L of G.luces) { const h = HALOS[L.tipo]; if (h) luces.push({ x: L.x - G.camX, y: L.y, tam: h.tam, fuerza: 1 }); }
-    agua.dibujar(ctx, { t: G.t, camX: G.camX, viento: S.viento, oscuridad: f.osc, colorNoche: '#141A2E', luces });
+    for (const L of G.luces) { const h = HALOS[L.tipo]; if (h && fz > 0.05) luces.push({ x: L.x - G.camX, y: L.y, fuerza: h.fuerza * fz, ancho: h.ancho }); }
+    const sol = B.astro ? { x: B.sol[0], y: B.sol[1], vis: B.astro === 'luna' ? 0.8 : 1, col: B.solC } : null;
+    return { osc: B.osc, viento: S.viento, agua: B.agua, cielo: B.cielo[1], sol, luces, ondas: S.ondas };
+  };
+  S.agua2D = () => {
+    const B = S.B, luces = [];
+    for (const L of G.luces) { const h = HALOS[L.tipo]; if (h) luces.push({ x: L.x - G.camX, y: L.y, tam: L.tipo === 'fogata' ? 'grande' : 'chica', fuerza: 1 }); }
+    agua2D.dibujar(G.ctx, { t: G.t, camX: G.camX, viento: S.viento, oscuridad: B.osc, colorNoche: '#141A2E', luces });
   };
 
-  // ---- Lluvia (después del agua: gotas en el aire y ondas en la superficie)
+  // ---------------- Lluvia (capa de interfaz: no se refleja) y ondas en el agua
+  const gotas = Array.from({ length: 150 }, (_, i) => ({ x: U.hash(i, 41) * (W + 60), y: U.hash(i, 42) * H, v: 260 + U.hash(i, 43) * 120 }));
   S.lluvia = (dt) => {
-    if (S.clima !== 'lluvia' && S.clima !== 'tormenta') return;
+    const lluvia = S.clima === 'lluvia' || S.clima === 'tormenta', ctx = C();
+    // ondas: de la lluvia y, de vez en cuando, de peces
+    if (lluvia && Math.random() < (S.clima === 'tormenta' ? 0.8 : 0.5)) S.ondas.push({ x: Math.random() * W, y: WY + 3 + Math.random() * 76, edad: 0, fuerza: 0.7 + Math.random() * 0.3 });
+    if (!lluvia && Math.random() < 0.012) S.ondas.push({ x: Math.random() * W, y: WY + 10 + Math.random() * 60, edad: 0, fuerza: 0.6 });
+    for (const o of S.ondas) o.edad += dt;
+    S.ondas = S.ondas.filter((o) => o.edad < 0.8).slice(-24);
+    if (!G.aguaGL.ok) for (const o of S.ondas) { const r = 1 + Math.floor(o.edad * 12); ctx.globalAlpha = 0.5 * (1 - o.edad / 0.8); D.rect(o.x - r, o.y, 1, 1, '#C0CCD8'); D.rect(o.x + r, o.y, 1, 1, '#C0CCD8'); ctx.globalAlpha = 1; }
+    if (!lluvia) return;
     const inc = S.clima === 'tormenta' ? 0.35 : 0.2;
-    ctx.fillStyle = S.fase === 'noche' ? '#6E7FA0' : '#A8B8D0';
+    ctx.fillStyle = S.B.osc > 0.5 ? '#7A8BB0' : '#A8B8D0';
     ctx.globalAlpha = 0.55;
     for (const g of gotas) {
       g.y += g.v * dt; g.x -= g.v * inc * dt;
@@ -1387,12 +1988,7 @@ window.G = (() => {
       if (g.x < -10) g.x += W + 60;
       const x = Math.round(g.x), y = Math.round(g.y);
       ctx.fillRect(x, y, 1, 3); ctx.fillRect(x - 1, y + 3, 1, 1);
-      if (y > WY + 2 && Math.random() < 0.02) ondas.push({ x, y, v: 0 });
     }
-    if (Math.random() < (S.clima === 'tormenta' ? 0.9 : 0.5)) ondas.push({ x: Math.random() * W, y: WY + 3 + Math.random() * 74, v: 0 });
-    ctx.globalAlpha = 0.5;
-    for (const o of ondas) { o.v += dt; const r = 1 + Math.floor(o.v * 10); ctx.fillRect(Math.round(o.x - r), Math.round(o.y), 1, 1); ctx.fillRect(Math.round(o.x + r), Math.round(o.y), 1, 1); }
-    ondas = ondas.filter((o) => o.v < 0.35);
     ctx.globalAlpha = 1;
   };
 
@@ -1400,44 +1996,172 @@ window.G = (() => {
     S.relampago = Math.max(0, S.relampago - dt);
     if (S.clima === 'tormenta') {
       S.proxRayo -= dt;
-      if (S.proxRayo <= 0) { S.relampago = 0.18; S.proxRayo = 6 + Math.random() * 7; G.audio.sfx('jefe', 0.5); }
+      if (S.proxRayo <= 0) { S.relampago = 0.2; S.proxRayo = 6 + Math.random() * 7; G.audio.sfx('trueno', 0.6); }
     }
   };
 })(window.G);
 
 </script>
 <script>
-// ---- 50_niveles.js
-// 50_niveles.js — datos de los niveles y su desarrollo: inicio, puntuación, victoria y derrota.
+// ---- 45_agua_gl.js
+// 45_agua_gl.js — composición final con WebGL: mundo pixel art (vecino más cercano) arriba del agua,
+// agua realista a resolución de pantalla (reflejo suave y deformado por olas, espejo según la profundidad,
+// destellos del sol/luna, columnas de luz de hogueras, ondas de lluvia, espuma en la orilla) y la capa de
+// interfaz encima. Si no hay WebGL, G.aguaGL.ok = false y el juego usa el agua 2D de agua.js.
 (function (G) {
-  const e = (tipo, x) => ({ tipo, x });
-  const NIVELES = [
-    { nombre: 'El vado', sub: 'Aprende a marchar y atacar', fase: 'dia', clima: 'despejado', largo: 1400, meta: 1340, tema: 1,
-      enemigos: [e('bruto', 520), e('bruto', 565), e('empalizada', 800), e('bruto', 1010), e('lancero', 1060)], fogatas: [] },
-    { nombre: 'Bosque de niebla', sub: 'Cuidado con los arqueros', fase: 'tarde', clima: 'niebla', largo: 1800, meta: 1740, tema: 2,
-      enemigos: [e('arquero', 460), e('bruto', 500), e('lancero', 720), e('empalizada', 920), e('arquero', 955), e('bruto', 1160),
-        e('bruto', 1200), e('lancero', 1420), e('arquero', 1470)], fogatas: [380, 1090] },
-    { nombre: 'Noche en el río', sub: 'Defiende cuando apunten', fase: 'noche', clima: 'lluvia', largo: 2000, meta: 1940, tema: 3,
-      enemigos: [e('bruto', 420), e('arquero', 470), e('lancero', 700), e('lancero', 745), e('empalizada', 960), e('arquero', 995),
-        e('arquero', 1030), e('bruto', 1260), e('bruto', 1300), e('lancero', 1520), e('arquero', 1570), e('bruto', 1610)],
-      fogatas: [150, 620, 1150, 1720] },
-    { nombre: 'El gigante del río', sub: 'Salta su onda y defiende su garrote', fase: 'noche', clima: 'tormenta', largo: 900, meta: null, tema: 4, jefe: true,
-      enemigos: [e('jefe', 620)], fogatas: [120, 460, 820] },
-  ];
+  const VS = `attribute vec2 p; void main(){ gl_Position = vec4(p, 0.0, 1.0); }`;
+  const FS = `
+  precision highp float;
+  uniform sampler2D uM, uU;
+  uniform vec2 uRes, uTam, uShake;
+  uniform float uT, uWY, uOsc, uViento, uCam, uNL, uNO;
+  uniform vec3 uAgua, uCielo, uSol, uSolC;
+  uniform vec4 uL[10];
+  uniform vec4 uO[24];
+  float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
+  vec3 pix(vec2 b){ return texture2D(uM, (floor(b) + 0.5) / uTam).rgb; }
+  vec3 lin(vec2 b){ b.y = clamp(b.y, 0.5, uWY - 0.5); return texture2D(uM, b / uTam).rgb; }
+  float olas(vec2 q){ return noise(q) * 0.5 + noise(q * 2.03 + vec2(uT * 0.31, -uT * 0.42)) * 0.3 + noise(q * 4.1 - vec2(uT * 0.53, uT * 0.21)) * 0.2; }
+  void main(){
+    vec2 fc = gl_FragCoord.xy;
+    vec2 b = vec2((fc.x + uShake.x) / uRes.x * uTam.x, (uRes.y - fc.y + uShake.y) / uRes.y * uTam.y);
+    vec3 col;
+    if (b.y < uWY) {
+      col = pix(b);
+    } else {
+      float d = b.y - uWY, prof = d / (uTam.y - uWY);
+      float wx = b.x + uCam;
+      float yy = 17.0 * sqrt(prof);                             // perspectiva: filas de olas más juntas al fondo
+      vec2 q = vec2(wx * 0.055, yy - uT * 0.9);
+      float n = olas(q), m = olas(q + vec2(17.3, 5.1));
+      float amp = (0.25 + 0.75 * uViento) * (0.35 + prof * 1.3);
+      float dx = (n - 0.5) * amp * 5.5, dy = (m - 0.5) * amp * 2.6;
+      // reflejo desenfocado según profundidad
+      float ry = uWY - d * 0.985 - 1.0 + dy, rx = b.x + dx, r = 0.5 + prof * 2.4 + uViento * 0.6;
+      vec3 refl = lin(vec2(rx, ry)) * 0.36 + (lin(vec2(rx - r, ry + r * 0.4)) + lin(vec2(rx + r, ry - r * 0.4))) * 0.22
+                + (lin(vec2(rx - r * 2.2, ry)) + lin(vec2(rx + r * 2.2, ry))) * 0.1;
+      float fres = mix(0.9, 0.38, pow(prof, 0.55));
+      vec3 hondo = mix(uAgua * 1.2, uAgua * 0.45, prof);
+      col = mix(hondo, refl * vec3(0.9, 0.96, 1.0), fres * 0.92);
+      // crestas que reflejan el cielo
+      float cresta = smoothstep(0.58, 0.82, n);
+      col += uCielo * cresta * 0.10 * (1.0 - uOsc * 0.6) * (0.5 + prof);
+      // destellos del sol o la luna
+      if (uSol.z > 0.0) {
+        float s = exp(-pow((b.x + dx * 2.0 - uSol.x) / (8.0 + d * 0.8), 2.0));
+        float g = pow(max(0.0, olas(q * 1.7 + 3.0) - 0.52) * 2.4, 3.0);
+        col += uSolC * s * g * 1.6 * uSol.z;
+      }
+      // columnas de luz de hogueras y faroles
+      for (int i = 0; i < 10; i++) {
+        if (float(i) >= uNL) break;
+        vec4 L = uL[i];
+        float w = exp(-pow((b.x + dx * 1.7 - L.x) / (L.w * (0.55 + prof * 0.9)), 2.0));
+        float br = smoothstep(0.35, 0.75, noise(vec2(d * 0.5 - uT * 2.6, L.x * 0.13 + floor(d * 0.25) * 0.37)));
+        col += vec3(1.0, 0.6, 0.28) * w * br * pow(1.0 - prof, 0.7) * L.z * 0.95;
+      }
+      // ondas de lluvia (anillos achatados por la perspectiva)
+      for (int i = 0; i < 24; i++) {
+        if (float(i) >= uNO) break;
+        vec4 o = uO[i];
+        vec2 dv = vec2(b.x - o.x, (b.y - o.y) * (3.4 - prof * 1.6));
+        float rr = length(dv), R = o.z * 16.0;
+        col += vec3(0.28, 0.3, 0.34) * exp(-pow((rr - R) * 1.1, 2.0)) * (1.0 - o.z / 0.8) * o.w * (1.0 - uOsc * 0.4);
+      }
+      // espuma en la orilla y sombra hacia el fondo
+      float esp = smoothstep(2.2, 0.0, d) * (0.35 + 0.65 * noise(vec2(wx * 0.25, uT * 1.6)));
+      col = mix(col, vec3(0.86, 0.88, 0.82) * (1.0 - uOsc * 0.65), esp * 0.4);
+      col *= 1.0 - prof * 0.18;
+    }
+    vec4 u = texture2D(uU, (floor(b) + 0.5) / uTam);
+    col = mix(col, u.rgb, u.a);
+    gl_FragColor = vec4(col, 1.0);
+  }`;
 
-  const N = G.nivel = null;
-  G.NIVELES = NIVELES;
+  const A = G.aguaGL = { ok: false };
+  let gl, prog, texM, texU, loc = {};
+
+  A.iniciar = (canvas) => {
+    try {
+      gl = canvas.getContext('webgl', { preserveDrawingBuffer: true, antialias: false, alpha: false });
+      if (!gl) return false;
+      const sh = (tipo, src) => { const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+      prog = gl.createProgram();
+      gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+      gl.useProgram(prog);
+      const bufV = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufV);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+      const ap = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(ap); gl.vertexAttribPointer(ap, 2, gl.FLOAT, false, 0, 0);
+      const tex = (unidad) => { const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + unidad); gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; };
+      texM = tex(0); texU = tex(1);
+      for (const n of ['uM', 'uU', 'uRes', 'uTam', 'uShake', 'uT', 'uWY', 'uOsc', 'uViento', 'uCam', 'uNL', 'uNO', 'uAgua', 'uCielo', 'uSol', 'uSolC', 'uL', 'uO']) loc[n] = gl.getUniformLocation(prog, n);
+      gl.uniform1i(loc.uM, 0); gl.uniform1i(loc.uU, 1);
+      A.ok = true;
+    } catch (e) { console.warn('WebGL no disponible, se usa el agua 2D:', e.message); A.ok = false; }
+    return A.ok;
+  };
+
+  const rgb = (h) => { const n = parseInt(h.slice(1), 16); return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; };
+  // p: { osc, viento, agua, cielo, sol:{x,y,vis,col}, luces:[{x,y,fuerza,ancho}], ondas:[{x,y,edad,fuerza}], temblor:[dx,dy] }
+  A.presentar = (mundo, ui, p) => {
+    const c = gl.canvas;
+    gl.viewport(0, 0, c.width, c.height);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texM);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, mundo);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texU);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, ui);
+    gl.uniform2f(loc.uRes, c.width, c.height); gl.uniform2f(loc.uTam, G.W, G.H);
+    gl.uniform2f(loc.uShake, p.temblor ? p.temblor[0] : 0, p.temblor ? p.temblor[1] : 0);
+    gl.uniform1f(loc.uT, G.t); gl.uniform1f(loc.uWY, p.sinAgua ? G.H + 1 : G.WY); gl.uniform1f(loc.uOsc, p.osc); gl.uniform1f(loc.uViento, p.viento);
+    gl.uniform1f(loc.uCam, G.camX);
+    gl.uniform3fv(loc.uAgua, rgb(p.agua)); gl.uniform3fv(loc.uCielo, rgb(p.cielo));
+    const s = p.sol || { x: 0, y: 0, vis: 0, col: '#FFFFFF' };
+    gl.uniform3f(loc.uSol, s.x, s.y, s.vis); gl.uniform3fv(loc.uSolC, rgb(s.col));
+    const L = new Float32Array(40), nl = Math.min(10, p.luces.length);
+    for (let i = 0; i < nl; i++) { const l = p.luces[i]; L.set([l.x, l.y, l.fuerza, l.ancho], i * 4); }
+    gl.uniform4fv(loc.uL, L); gl.uniform1f(loc.uNL, nl);
+    const O = new Float32Array(96), no = Math.min(24, p.ondas.length);
+    for (let i = 0; i < no; i++) { const o = p.ondas[i]; O.set([o.x, o.y, o.edad, o.fuerza], i * 4); }
+    gl.uniform4fv(loc.uO, O); gl.uniform1f(loc.uNO, no);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  };
+})(window.G);
+
+</script>
+<script>
+// ---- 50_niveles.js
+// 50_niveles.js — desarrollo de cada fase de la campaña (inicio, puntos, monedas, victoria, derrota),
+// el campamento y la cámara.
+(function (G) {
+  G.NIVELES = G.campana.FASES;
 
   G.iniciarNivel = (idx) => {
-    const d = NIVELES[idx];
-    G.nivel = { idx, datos: d, puntos: 0, bajas: 0, tiempo: 0, fin: null, maxCombo: 0 };
+    const d = G.campana.FASES[idx];
+    G.nivel = { idx, datos: d, puntos: 0, bajas: 0, tiempo: 0, fin: null, maxCombo: 0, monedas: 0, premio: 0 };
     G.escena.configurar(d);
     G.tropa.reiniciar(60);
-    G.enem.reiniciar(d.enemigos);
+    G.enem.reiniciar(d.enemigos, G.campana.dificultad(idx));
     G.combate.reiniciar();
     G.ritmo.reiniciar();
-    G.audio.tema(d.tema);
+    G.audio.tema(d.cancion);
     G.camX = 0;
+  };
+
+  // Campamento: tiendas, herrería, maniquí, carro y la tropa descansando junto al fuego
+  G.iniciarCampamento = () => {
+    G.escena.configurar({ bioma: 'campamento', largo: 1000, fogatas: [300], meta: null,
+      props: [{ tipo: 'tienda', x: 170, col: '#C8A870' }, { tipo: 'tienda', x: 214, col: '#A88A5A', bandera: '#F2C14E' }, { tipo: 'estandarte', x: 250 },
+        { tipo: 'yunque', x: 372 }, { tipo: 'maniqui', x: 420 }, { tipo: 'carro', x: 470 }, { tipo: 'tienda', x: 520, col: '#B89868' }] });
+    G.tropa.reiniciar(330);
+    G.enem.reiniciar([]); G.combate.reiniciar(); G.ritmo.reiniciar();
+    G.camX = 150; G.nivel = null;
+    G.audio.tema('campamento'); G.audio.fiebre(false);
   };
 
   G.on('muere', (o) => {
@@ -1451,12 +2175,15 @@ window.G = (() => {
     const n = G.nivel; if (!n || n.fin) return;
     n.tiempo += dt;
     const ab = G.tropa.abanderado();
-    if (!ab.vivo || G.tropa.vivas().length === 0) { n.fin = 'derrota'; G.emit('fin_nivel', n); return; }
+    if (!ab.vivo || G.tropa.vivas().length === 0) {
+      n.fin = 'derrota'; G.campana.ganar(n.monedas); G.emit('fin_nivel', n); return;
+    }
     const d = n.datos;
-    const gana = d.jefe ? !G.enem.jefe().vivo : G.tropa.ej.x + 40 >= d.meta;
+    const gana = d.jefe ? !G.enem.jefe().vivo : G.tropa.ej.x + G.tropa.frenteOff >= d.meta;
     if (gana) {
       n.puntos += G.tropa.vivas().length * 150 + Math.max(0, 600 - Math.floor(n.tiempo) * 3);
-      n.fin = 'victoria'; G.emit('fin_nivel', n);
+      n.premio = d.recompensa;
+      n.fin = 'victoria'; G.campana.ganar(n.monedas + n.premio); G.emit('fin_nivel', n);
     }
   };
 
@@ -1476,10 +2203,11 @@ window.G = (() => {
 // ---- 60_ui.js
 // 60_ui.js — pantallas (título, mapa, juego, pausa, calibración, victoria, derrota, créditos) y marcador.
 (function (G) {
-  const U = G.u, D = G.d, W = G.W, H = G.H, ctx = G.ctx, BEAT = G.BEAT;
+  const U = G.u, D = G.d, W = G.W, H = G.H, BEAT = G.BEAT;
+  let ctx = G.ctx;                     // se actualiza al dibujar (capa de interfaz)
   const COL = { PATA: '#E0503A', PON: '#4A8FE0', CHAKA: '#F2C14E', DON: '#6ACB6A' };
   const NOMBRE_ORDEN = { marchar: '¡MARCHAR!', atacar: '¡ATACAR!', defender: '¡DEFENDER!', retroceder: '¡RETROCEDER!', cargar: '¡CARGAR!' };
-  const UI = G.ui = { sel: 0, menu: 0, juicios: [], avisoCombo: 0, finT: 0, calib: null, volverA: 'mapa', creditosY: 0, tInicio: 0 };
+  const UI = G.ui = { sel: 0, menu: 0, pest: 0, fila: 0, aviso: null, juicios: [], avisoCombo: 0, finT: 0, calib: null, volverA: 'mapa', creditosY: 0, tInicio: 0 };
 
   // ---- Utilidades de dibujo de interfaz
   function panel(x, y, w, h, a = 0.7) { ctx.globalAlpha = a; D.rect(x, y, w, h, '#0D0F16'); ctx.globalAlpha = 1; D.rect(x, y, w, 1, '#3A4058'); D.rect(x, y + h - 1, w, 1, '#3A4058'); }
@@ -1492,6 +2220,7 @@ window.G = (() => {
     else D.rect(x - 4, y - 4, 9, 9, c);
     ctx.globalAlpha = 1;
   }
+  function moneda(x, y) { D.disco(x, y, 3, '#C8962A'); D.disco(x, y, 2, '#F2C14E'); D.rect(x - 1, y - 2, 1, 1, '#FFF1A0'); }
   function libroOrdenes(x, y) {
     panel(x, y, 150, 50, 0.6);
     let yy = y + 4;
@@ -1516,39 +2245,65 @@ window.G = (() => {
   G.on('combo_roto', (m) => { UI.avisoCombo = 1.2; UI.motivo = m; });
   G.on('fin_nivel', (n) => { UI.finT = 1.6; G.audio.sfx(n.fin === 'victoria' ? 'victoria' : 'derrota'); if (n.fin === 'victoria') G.prog.superar(n.idx + 1, n.puntos); });
 
-  // ---- Fondo de título: la tropa descansando junto al río al atardecer
+  // ---- Fondo de título: la tropa junto al río en la pradera
   function prepararTitulo() {
-    G.escena.configurar({ fase: 'tarde', clima: 'despejado', largo: 3000, fogatas: [330], meta: null });
+    G.escena.configurar({ bioma: 'pradera', largo: 3000, fogatas: [], meta: null });
     G.tropa.reiniciar(250); G.enem.reiniciar([]); G.combate.reiniciar(); G.ritmo.reiniciar();
-    G.camX = 90; G.audio.tema(0); G.nivel = null;
+    G.camX = 90; G.audio.tema('titulo'); G.nivel = null;
   }
   UI.prepararTitulo = prepararTitulo;
+  const PESTANAS = ['MEJORAR', 'RECLUTAR', 'PARTIR', 'AJUSTES'];
+  const CLASES_M = ['lanza', 'escudo', 'arco', 'bandera'], CLASES_R = ['lanza', 'escudo', 'arco'];
 
   G.on('estado', ({ ahora, datos }) => {
-    if (ahora === 'titulo' || ahora === 'mapa') { if (!G.nivel || ahora === 'titulo' || datos === 'reset') prepararTitulo(); G.audio.tema(0); G.audio.fiebre(false); G.audio.metronomo(false); }
-    if (ahora === 'mapa') UI.sel = Math.min(G.prog.datos.desbloqueado, G.NIVELES.length) - 1;
+    if (ahora === 'titulo') prepararTitulo();
+    if (ahora === 'campamento' && datos !== 'mantener') G.iniciarCampamento();
+    if (ahora === 'mapa') { UI.sel = Math.min(G.prog.datos.desbloqueado, G.NIVELES.length) - 1; if (!G.nivel && G.escena.bioma !== 'campamento') G.iniciarCampamento(); }
+    if (ahora === 'titulo' || ahora === 'mapa' || ahora === 'campamento') { G.audio.fiebre(false); G.audio.metronomo(false); }
     if (ahora === 'juego' && datos === 'nuevo') UI.tInicio = G.t;
     UI.menu = 0;
   });
+  function accionCampamento() {
+    const pest = PESTANAS[UI.pest], C = G.campana;
+    if (pest === 'MEJORAR') {
+      const c = CLASES_M[UI.fila];
+      if (C.mejorar(c)) { G.audio.sfx('mejora'); UI.aviso = { s: C.CLASES[c].nombre + ' NIVEL ' + C.datos().niveles[c], t: 1.6 }; G.tropa.reiniciar(330); }
+      else { G.audio.sfx('fallo', 0.5); UI.aviso = { s: C.costeMejora(c) === null ? 'NIVEL MAXIMO' : 'FALTAN MONEDAS', t: 1.2 }; }
+    } else if (pest === 'RECLUTAR') {
+      const c = CLASES_R[UI.fila];
+      if (C.reclutar(c)) { G.audio.sfx('mejora'); UI.aviso = { s: '¡NUEVO RECLUTA!', t: 1.6 }; G.tropa.reiniciar(330); }
+      else { G.audio.sfx('fallo', 0.5); UI.aviso = { s: C.costeRecluta(c) === null ? 'TROPA COMPLETA' : 'FALTAN MONEDAS', t: 1.2 }; }
+    } else if (pest === 'PARTIR') { G.audio.sfx('ok'); G.cambiarEstado('mapa'); }
+    else { UI.volverA = 'campamento'; G.cambiarEstado('ajustes'); }
+  }
 
   G.on('tecla', (k) => {
     const est = G.estado;
-    if (est === 'titulo') { if (k === 'ok' || k === 'pausa') { G.audio.sfx('ok'); G.cambiarEstado('mapa'); } return; }
+    if (est === 'titulo') { if (k === 'ok' || k === 'pausa') { G.audio.sfx('ok'); G.cambiarEstado('campamento'); } return; }
+    if (est === 'campamento') {
+      const filas = UI.pest === 0 ? 4 : UI.pest === 1 ? 3 : 1;
+      if (k === 'izq') { UI.pest = (UI.pest + 3) % 4; UI.fila = 0; G.audio.sfx('menu'); }
+      if (k === 'der') { UI.pest = (UI.pest + 1) % 4; UI.fila = 0; G.audio.sfx('menu'); }
+      if (k === 'arriba') { UI.fila = (UI.fila + filas - 1) % filas; G.audio.sfx('menu'); }
+      if (k === 'abajo') { UI.fila = (UI.fila + 1) % filas; G.audio.sfx('menu'); }
+      if (k === 'ok') accionCampamento();
+      if (k === 'atras') G.cambiarEstado('titulo');
+      return;
+    }
     if (est === 'mapa') {
       const max = Math.min(G.prog.datos.desbloqueado, G.NIVELES.length) - 1;
-      if (k === 'izq') { UI.sel = Math.max(0, UI.sel - 1); G.audio.sfx('menu'); }
-      if (k === 'der') { UI.sel = Math.min(max, UI.sel + 1); G.audio.sfx('menu'); }
+      if (k === 'izq' || k === 'abajo') { UI.sel = Math.max(0, UI.sel - 1); G.audio.sfx('menu'); }
+      if (k === 'der' || k === 'arriba') { UI.sel = Math.min(max, UI.sel + 1); G.audio.sfx('menu'); }
       if (k === 'ok') { G.audio.sfx('ok'); G.iniciarNivel(UI.sel); G.cambiarEstado('juego', 'nuevo'); }
-      if (k === 'arriba' || k === 'abajo') { UI.volverA = 'mapa'; G.cambiarEstado('ajustes'); }
-      if (k === 'atras') G.cambiarEstado('titulo');
+      if (k === 'atras') G.cambiarEstado('campamento', 'mantener');
       return;
     }
     if (est === 'juego') { if (k === 'pausa' && !G.nivel.fin) { G.audio.pausar(true); G.cambiarEstado('pausa'); } return; }
     if (est === 'pausa' || est === 'ajustes') {
-      const ops = est === 'pausa' ? ['continuar', 'calibrar', 'musica', 'mapa'] : ['calibrar', 'musica', 'volver'];
+      const ops = est === 'pausa' ? ['continuar', 'calibrar', 'musica', 'campamento'] : ['calibrar', 'musica', 'volver'];
       if (k === 'arriba') { UI.menu = (UI.menu + ops.length - 1) % ops.length; G.audio.sfx('menu'); }
       if (k === 'abajo') { UI.menu = (UI.menu + 1) % ops.length; G.audio.sfx('menu'); }
-      const volver = () => { if (est === 'pausa') { G.audio.pausar(false); G.cambiarEstado('juego'); } else G.cambiarEstado('mapa'); };
+      const volver = () => { if (est === 'pausa') { G.audio.pausar(false); G.cambiarEstado('juego'); } else G.cambiarEstado('campamento', 'mantener'); };
       if (k === 'atras' || k === 'pausa') volver();
       if (k === 'ok') {
         const o = ops[UI.menu];
@@ -1558,7 +2313,7 @@ window.G = (() => {
           UI.volverA = est; if (est === 'pausa') G.audio.pausar(false);
           UI.calib = { errores: [], ult: -1 }; G.audio.metronomo(true); G.audio.musica(false); G.cambiarEstado('calibrar');
         }
-        if (o === 'mapa') { G.audio.pausar(false); G.cambiarEstado('mapa', 'reset'); }
+        if (o === 'campamento') { G.audio.pausar(false); G.cambiarEstado('campamento'); }
       }
       return;
     }
@@ -1567,15 +2322,18 @@ window.G = (() => {
       return;
     }
     if (est === 'victoria') {
-      if (k === 'ok') { if (G.nivel.idx === G.NIVELES.length - 1) { UI.creditosY = H; G.cambiarEstado('creditos'); } else G.cambiarEstado('mapa', 'reset'); }
+      if (k === 'ok') {
+        const ultima = G.nivel.idx === G.NIVELES.length - 1;
+        if (ultima) { UI.creditosY = H; G.cambiarEstado('creditos'); } else G.cambiarEstado('campamento');
+      }
       return;
     }
     if (est === 'derrota') {
       if (k === 'arriba' || k === 'abajo' || k === 'izq' || k === 'der') { UI.menu = 1 - UI.menu; G.audio.sfx('menu'); }
-      if (k === 'ok') { if (UI.menu === 0) { G.iniciarNivel(G.nivel.idx); G.cambiarEstado('juego', 'nuevo'); } else G.cambiarEstado('mapa', 'reset'); }
+      if (k === 'ok') { if (UI.menu === 0) { G.iniciarNivel(G.nivel.idx); G.cambiarEstado('juego', 'nuevo'); } else G.cambiarEstado('campamento'); }
       return;
     }
-    if (est === 'creditos' && (k === 'ok' || k === 'atras')) G.cambiarEstado('mapa', 'reset');
+    if (est === 'creditos' && (k === 'ok' || k === 'atras')) G.cambiarEstado('campamento');
   });
   G.on('tambor', (t) => {
     if (G.estado === 'juego' && G.nivel && !G.nivel.fin) G.ritmo.golpe(t);
@@ -1634,6 +2392,7 @@ window.G = (() => {
     if (UI.avisoCombo > 0) { UI.avisoCombo -= dt; if (parpadeo(6)) D.texto('COMBO PERDIDO: ' + UI.motivo, 8, R.fiebre ? 30 : 18, '#E0503A', 1, 'izq', '#15131A'); }
     // puntos y abanderado
     D.texto(String(n.puntos).padStart(6, '0'), W - 8, 8, '#FFF1C2', 1, 'der', '#15131A');
+    moneda(W - 60, 30); D.texto('+' + n.monedas, W - 54, 28, '#F2C14E', 1, 'izq', '#15131A');
     const ab = G.tropa.abanderado();
     D.texto('BANDERA', W - 8, 15, '#C8D0E0', 1, 'der', '#15131A');
     D.rect(W - 48, 23, 40, 3, '#2A0E0E'); D.rect(W - 48, 23, Math.round(40 * ab.hp / ab.max), 3, '#7FD06A');
@@ -1672,38 +2431,91 @@ window.G = (() => {
     ctx.globalAlpha = 0.45; D.rect(0, 30, W, 64, '#0D0F16'); ctx.globalAlpha = 1;
     D.texto('TAMBORES', W / 2, 38, '#FFF1C2', 4, 'centro', '#2A1A12');
     D.texto('JUNTO AL RIO', W / 2, 64, '#F2C14E', 3, 'centro', '#2A1A12');
+    ctx.globalAlpha = 0.6; D.rect(W / 2 - 110, 102, 220, 40, '#0D0F16'); ctx.globalAlpha = 1;
     if (parpadeo(1.5)) D.texto(G.entrada.tactil ? 'TOCA PARA EMPEZAR' : 'PULSA UNA TECLA', W / 2, 108, '#FFFFFF', 1, 'centro', '#15131A');
     D.texto('A PATA   D PON   W CHAKA   S DON', W / 2, 122, '#C8D0E0', 1, 'centro', '#15131A');
+    D.texto('MEJORA TU TROPA EN EL CAMPAMENTO ENTRE BATALLAS', W / 2, 134, '#9AA0B4', 1, 'centro', '#15131A');
   }
+  const PUNTOS_MAPA = [[50, 158], [110, 128], [172, 150], [236, 116], [300, 146], [366, 104], [428, 132]];
+  const COL_BIOMA = { pradera: '#5E9A4A', otono: '#C0602A', niebla: '#7A8A94', pantano: '#2E4A6A', nieve: '#DDE4F0', tormenta: '#6A2020' };
   function mapa() {
-    for (let y = 0; y < H; y++) { ctx.fillStyle = U.mix('#1B2238', '#2C2A38', y / H); ctx.fillRect(0, y, W, 1); }
+    ctx.globalAlpha = 0.82; D.rect(0, 0, W, H, '#141826'); ctx.globalAlpha = 1;
     D.texto('ELIGE TU CAMINO', W / 2, 14, '#FFF1C2', 2, 'centro', '#0D0F16');
-    const pts = [[70, 150], [180, 110], [300, 150], [410, 100]];
-    // río serpenteante
-    for (let x = 0; x < W; x++) { const y = 175 + Math.round(Math.sin(x * 0.03) * 10 + Math.sin(x * 0.011 + 1) * 8); D.rect(x, y, 1, 6, '#3E5A7A'); if ((x + Math.floor(G.t * 20)) % 23 === 0) D.rect(x, y + 2, 3, 1, '#7FA0C0'); }
-    for (let i = 0; i < pts.length - 1; i++) {
-      const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
-      for (let k = 0; k <= 20; k += 2) D.rect(U.lerp(ax, bx, k / 20), U.lerp(ay, by, k / 20), 2, 2, i + 1 < G.prog.datos.desbloqueado ? '#C8B080' : '#4A4F66');
+    for (let x = 0; x < W; x++) { const y = 182 + Math.round(Math.sin(x * 0.03) * 8 + Math.sin(x * 0.011 + 1) * 6); D.rect(x, y, 1, 6, '#3E5A7A'); if ((x + Math.floor(G.t * 20)) % 23 === 0) D.rect(x, y + 2, 3, 1, '#7FA0C0'); }
+    const abiertos = G.prog.datos.desbloqueado;
+    for (let i = 0; i < PUNTOS_MAPA.length - 1; i++) {
+      const [ax, ay] = PUNTOS_MAPA[i], [bx, by] = PUNTOS_MAPA[i + 1];
+      for (let k = 0; k <= 20; k += 2) D.rect(U.lerp(ax, bx, k / 20), U.lerp(ay, by, k / 20), 2, 2, i + 1 < abiertos ? '#C8B080' : '#3A3F55');
     }
-    pts.forEach(([x, y], i) => {
-      const abierto = i < G.prog.datos.desbloqueado, hecho = G.prog.datos.records[i + 1] !== undefined, sel = i === UI.sel;
-      D.disco(x, y, 9, abierto ? '#C8B080' : '#3A3F55');
-      D.disco(x, y, 7, abierto ? (i === 3 ? '#6A2020' : '#2E4A30') : '#23263A');
-      D.texto(i === 3 ? '!' : String(i + 1), x + 1, y - 2, abierto ? '#FFF1C2' : '#5A5F75', 1, 'centro');
-      if (hecho) { D.rect(x + 7, y - 20, 1, 12, '#15131A'); D.rect(x + 8, y - 20, 6, 4, '#B8322A'); }
-      if (sel && parpadeo(3)) { D.rect(x - 12, y + 12, 24, 1, '#FFF1C2'); D.rect(x - 1, y + 13, 3, 2, '#FFF1C2'); }
+    PUNTOS_MAPA.forEach(([x, y], i) => {
+      const f = G.NIVELES[i], abierto = i < abiertos, hecho = G.prog.datos.records[i + 1] !== undefined, sel = i === UI.sel;
+      D.disco(x, y, 10, abierto ? '#C8B080' : '#2E3246');
+      D.disco(x, y, 8, abierto ? COL_BIOMA[f.bioma] : '#1E2132');
+      D.texto(f.jefe ? '!' : String(i + 1), x + 1, y - 2, abierto ? '#FFF1C2' : '#4A4F66', 1, 'centro', abierto ? '#15131A' : null);
+      if (hecho) { D.rect(x + 8, y - 22, 1, 13, '#15131A'); D.rect(x + 9, y - 22, 6, 4, '#B8322A'); }
+      if (sel && parpadeo(3)) { D.rect(x - 12, y + 13, 24, 1, '#FFF1C2'); D.rect(x - 1, y + 14, 3, 2, '#FFF1C2'); }
     });
     const d = G.NIVELES[UI.sel];
-    panel(40, 206, 400, 50, 0.7);
-    D.texto(d.nombre, 52, 214, '#FFF1C2', 2, 'izq');
-    D.texto(d.sub, 52, 230, '#C8D0E0');
+    panel(30, 204, 420, 56, 0.8);
+    D.texto('FASE ' + (UI.sel + 1) + ' · ' + d.nombre, 42, 211, '#FFF1C2', 2, 'izq');
+    D.texto(d.sub, 42, 228, '#C8D0E0');
+    moneda(46, 243); D.texto('PREMIO ' + d.recompensa, 52, 241, '#F2C14E');
     const rec = G.prog.datos.records[UI.sel + 1];
-    D.texto(rec !== undefined ? 'RECORD ' + rec : 'SIN SUPERAR', 428, 214, '#F2C14E', 1, 'der');
-    D.texto(G.entrada.tactil ? 'TOCA PARA JUGAR' : 'A/D ELEGIR · ENTER JUGAR · W AJUSTES', 52, 244, '#9AA0B4');
+    D.texto(rec !== undefined ? 'RECORD ' + rec : 'SIN SUPERAR', 438, 211, '#F2C14E', 1, 'der');
+    D.texto(G.entrada.tactil ? 'TOCA PARA JUGAR' : 'A/D ELEGIR · ENTER JUGAR · ESC VOLVER', 438, 241, '#9AA0B4', 1, 'der');
     G.entrada.zonas = [];
-    pts.forEach(([x, y], i) => { if (i < G.prog.datos.desbloqueado) G.entrada.zonas.push({ x: x - 14, y: y - 14, w: 28, h: 28, accion: () => { if (UI.sel === i) { G.iniciarNivel(i); G.cambiarEstado('juego', 'nuevo'); } else UI.sel = i; } }); });
-    G.entrada.zonas.push({ x: 0, y: 0, w: 80, h: 30, accion: () => { UI.volverA = 'mapa'; G.cambiarEstado('ajustes'); } });
-    D.texto('AJUSTES', 8, 8, '#9AA0B4');
+    PUNTOS_MAPA.forEach(([x, y], i) => { if (i < abiertos) G.entrada.zonas.push({ x: x - 14, y: y - 14, w: 28, h: 28, accion: () => { if (UI.sel === i) { G.iniciarNivel(i); G.cambiarEstado('juego', 'nuevo'); } else UI.sel = i; } }); });
+    G.entrada.zonas.push({ x: 0, y: 0, w: 90, h: 30, tecla: 'atras' });
+    D.texto('< CAMPAMENTO', 8, 8, '#9AA0B4');
+  }
+  // ---- Campamento: panel de mejoras sobre la escena
+  function estrellas(x, y, n, max) { for (let i = 0; i < max; i++) { D.rect(x + i * 7, y, 5, 5, i < n ? '#F2C14E' : '#3A3F55'); if (i < n) D.rect(x + i * 7 + 1, y + 1, 1, 1, '#FFF1A0'); } }
+  function campamento(dt) {
+    const C = G.campana, d = C.datos();
+    D.texto('CAMPAMENTO', 12, 10, '#FFF1C2', 2, 'izq', '#15131A');
+    moneda(W - 70, 16); D.texto(String(d.monedas), W - 62, 13, '#F2C14E', 2, 'izq', '#15131A');
+    const px = 250, py = 32, pw = 222, ph = 150;
+    panel(px, py, pw, ph, 0.78);
+    G.entrada.zonas = [];
+    PESTANAS.forEach((t, i) => {
+      const x = px + 4 + i * 54, on = i === UI.pest;
+      D.rect(x, py + 4, 52, 11, on ? '#3A4058' : '#1A1E2C');
+      D.texto(t, x + 26, py + 7, on ? '#FFF1C2' : '#8A90A4', 1, 'centro');
+      G.entrada.zonas.push({ x, y: py + 4, w: 52, h: 11, accion: () => { UI.pest = i; UI.fila = 0; G.audio.sfx('menu'); } });
+    });
+    const y0 = py + 22, pest = PESTANAS[UI.pest];
+    const fila = (i, alto, dibuja) => {
+      const y = y0 + i * alto, on = i === UI.fila;
+      if (on) { ctx.globalAlpha = 0.5; D.rect(px + 3, y - 2, pw - 6, alto - 2, '#3A4058'); ctx.globalAlpha = 1; D.rect(px + 3, y - 2, 2, alto - 2, '#F2C14E'); }
+      dibuja(px + 10, y, on);
+      G.entrada.zonas.push({ x: px, y: y - 2, w: pw, h: alto - 2, accion: () => { if (UI.fila === i) accionCampamento(); else UI.fila = i; } });
+    };
+    if (pest === 'MEJORAR') {
+      CLASES_M.forEach((c, i) => fila(i, 30, (x, y, on) => {
+        const n = d.niveles[c], coste = C.costeMejora(c), st = C.stats(c);
+        D.texto(C.CLASES[c].nombre, x, y, '#FFF1C2'); estrellas(x + 100, y - 1, n, C.NIVEL_MAX);
+        D.texto(c === 'bandera' ? 'MORAL +' + Math.round((st.dano / (1 + 0.2 * (n - 1)) - 1) * 100) + '%' : 'VIDA ' + Math.round(st.vida * 100) + '% · DAÑO ' + Math.round(st.dano * 100) + '%', x, y + 9, '#9AA0B4');
+        if (coste === null) D.texto('MAX', px + pw - 10, y + 9, '#6ACB6A', 1, 'der');
+        else { moneda(px + pw - 38, y + 11); D.texto(String(coste), px + pw - 10, y + 9, d.monedas >= coste ? '#F2C14E' : '#8A5A4A', 1, 'der'); }
+      }));
+    } else if (pest === 'RECLUTAR') {
+      CLASES_R.forEach((c, i) => fila(i, 36, (x, y) => {
+        const coste = C.costeRecluta(c);
+        D.texto(C.CLASES[c].nombre, x, y, '#FFF1C2'); D.texto(d.tropa[c] + ' / ' + C.CLASES[c].max, px + pw - 10, y, '#C8D0E0', 1, 'der');
+        D.texto(C.CLASES[c].rol, x, y + 9, '#9AA0B4');
+        if (coste === null) D.texto('COMPLETO', px + pw - 10, y + 18, '#6ACB6A', 1, 'der');
+        else { moneda(px + pw - 38, y + 20); D.texto(String(coste), px + pw - 10, y + 18, d.monedas >= coste ? '#F2C14E' : '#8A5A4A', 1, 'der'); }
+      }));
+    } else if (pest === 'PARTIR') {
+      fila(0, 40, (x, y) => {
+        const sig = Math.min(G.prog.datos.desbloqueado, G.NIVELES.length) - 1;
+        D.texto('ELEGIR FASE EN EL MAPA', x, y, '#FFF1C2', 1); D.texto('SIGUIENTE: ' + G.NIVELES[sig].nombre, x, y + 11, '#C8D0E0'); D.texto('FASES SUPERADAS: ' + Object.keys(G.prog.datos.records).length + ' / ' + G.NIVELES.length, x, y + 22, '#9AA0B4');
+      });
+    } else {
+      fila(0, 40, (x, y) => { D.texto('CALIBRAR RITMO Y MUSICA', x, y, '#FFF1C2'); D.texto('LATENCIA: ' + G.prog.datos.latencia + ' MS', x, y + 11, '#9AA0B4'); });
+    }
+    D.texto(G.entrada.tactil ? 'TOCA DOS VECES PARA ELEGIR' : 'A/D PESTAÑA · W/S FILA · ENTER ACEPTAR', px + pw / 2, py + ph - 10, '#6A7088', 1, 'centro');
+    if (UI.aviso) { UI.aviso.t -= dt; ctx.globalAlpha = U.clamp(UI.aviso.t * 2, 0, 1); D.texto(UI.aviso.s, px + pw / 2, py + ph + 6, '#FFF1C2', 1, 'centro', '#15131A'); ctx.globalAlpha = 1; if (UI.aviso.t <= 0) UI.aviso = null; }
   }
   function pausa(titulo, ops) {
     ctx.globalAlpha = 0.6; D.rect(0, 0, W, H, '#0D0F16'); ctx.globalAlpha = 1;
@@ -1730,11 +2542,11 @@ window.G = (() => {
     const n = G.nivel;
     ctx.globalAlpha = 0.72; D.rect(0, 40, W, 150, '#0D0F16'); ctx.globalAlpha = 1;
     D.texto(victoria ? '¡VICTORIA!' : 'DERROTA', W / 2, 54, victoria ? '#F2C14E' : '#E0503A', 4, 'centro', '#15131A');
-    const filas = [['PUNTOS', n.puntos], ['ENEMIGOS VENCIDOS', n.bajas], ['COMBO MAXIMO', n.maxCombo], ['GOLPES PERFECTOS', G.ritmo.perfectos], ['TIEMPO', Math.floor(n.tiempo) + ' S']];
+    const filas = [['PUNTOS', n.puntos], ['ENEMIGOS VENCIDOS', n.bajas], ['COMBO MAXIMO', n.maxCombo], ['GOLPES PERFECTOS', G.ritmo.perfectos], ['MONEDAS', '+' + (n.monedas + n.premio) + (n.premio ? ' (PREMIO ' + n.premio + ')' : '')]];
     filas.forEach(([k, v], i) => { D.texto(k, W / 2 - 90, 92 + i * 11, '#C8D0E0'); D.texto(String(v), W / 2 + 90, 92 + i * 11, '#FFF1C2', 1, 'der'); });
     if (victoria) { if (parpadeo(1.5)) D.texto('PULSA PARA CONTINUAR', W / 2, 160, '#FFFFFF', 1, 'centro'); G.entrada.zonas = []; }
     else {
-      menuLista(['REINTENTAR', 'VOLVER AL MAPA'], 180, 152, UI.menu);
+      menuLista(['REINTENTAR', 'VOLVER AL CAMPAMENTO'], 180, 152, UI.menu);
       G.entrada.zonas = [0, 1].map((i) => ({ x: 170, y: 148 + i * 12, w: 160, h: 12, accion: () => { UI.menu = i; G.emit('tecla', 'ok'); } }));
     }
   }
@@ -1747,12 +2559,14 @@ window.G = (() => {
   }
 
   UI.dibujar = (dt) => {
+    ctx = G.ctx;
     const e = G.estado;
+    if (e === 'campamento') campamento(dt);
     if (e === 'titulo') { titulo(); G.entrada.zonas = []; }
     else if (e === 'mapa') mapa();
     else if (e === 'juego') hud(dt);
-    else if (e === 'pausa') pausa('PAUSA', ['CONTINUAR', 'CALIBRAR RITMO', 'MUSICA: ' + (G.prog.datos.musica ? 'SI' : 'NO'), 'SALIR AL MAPA']);
-    else if (e === 'ajustes') { mapa(); pausa('AJUSTES', ['CALIBRAR RITMO', 'MUSICA: ' + (G.prog.datos.musica ? 'SI' : 'NO'), 'VOLVER']); }
+    else if (e === 'pausa') pausa('PAUSA', ['CONTINUAR', 'CALIBRAR RITMO', 'MUSICA: ' + (G.prog.datos.musica ? 'SI' : 'NO'), 'VOLVER AL CAMPAMENTO']);
+    else if (e === 'ajustes') { pausa('AJUSTES', ['CALIBRAR RITMO', 'MUSICA: ' + (G.prog.datos.musica ? 'SI' : 'NO'), 'VOLVER']); }
     else if (e === 'calibrar') calibrar();
     else if (e === 'victoria') fin(true);
     else if (e === 'derrota') fin(false);
@@ -1773,21 +2587,32 @@ window.G = (() => {
 // 99_principal.js — bucle, escalado entero, orden de actualización/dibujo y modos de prueba por URL.
 (function (G) {
   const U = G.u, W = G.W, H = G.H, BEAT = G.BEAT, P = G.P;
-  const pantalla = document.getElementById('pantalla'), pctx = pantalla.getContext('2d');
+  const pantalla = document.getElementById('pantalla');
   G.pantalla = pantalla;
+  // Capa de interfaz (transparente) encima del mundo; el agua WebGL se compone entre ambas.
+  const capaUI = G.lienzo(W, H);
+  G.bufUI = capaUI.c;
+  const ctxMundo = G.ctx;
+  const usarGL = !P.has('sin_gl') && G.aguaGL.iniciar(pantalla);
+  const pctx = usarGL ? null : pantalla.getContext('2d');
   let escala = 1;
   function ajustar() {
-    escala = Math.max(1, Math.floor(Math.min(innerWidth / W, innerHeight / H)));
-    if (innerWidth / W < 1 || innerHeight / H < 1) escala = Math.min(innerWidth / W, innerHeight / H);
-    pantalla.width = Math.round(W * escala); pantalla.height = Math.round(H * escala);
-    pantalla.style.left = Math.round((innerWidth - pantalla.width) / 2) + 'px';
-    pantalla.style.top = Math.round((innerHeight - pantalla.height) / 2) + 'px';
-    pctx.imageSmoothingEnabled = false;
+    const fijo = G.prueba;                                   // en pruebas: 2× fijo (960×540)
+    escala = fijo ? 2 : Math.max(1, Math.floor(Math.min(innerWidth / W, innerHeight / H)));
+    if (!fijo && (innerWidth / W < 1 || innerHeight / H < 1)) escala = Math.min(innerWidth / W, innerHeight / H);
+    // con WebGL el agua se dibuja a resolución real: usamos todo el alto disponible aunque no sea entero
+    if (!fijo && usarGL) escala = Math.min(innerWidth / W, innerHeight / H);
+    const dpr = usarGL && !fijo ? Math.min(2, window.devicePixelRatio || 1) : 1;
+    pantalla.width = Math.round(W * escala * dpr); pantalla.height = Math.round(H * escala * dpr);
+    pantalla.style.width = Math.round(W * escala) + 'px'; pantalla.style.height = Math.round(H * escala) + 'px';
+    pantalla.style.left = Math.round((innerWidth - W * escala) / 2) + 'px';
+    pantalla.style.top = Math.round((innerHeight - H * escala) / 2) + 'px';
+    if (pctx) pctx.imageSmoothingEnabled = false;
   }
   addEventListener('resize', ajustar); ajustar();
   G.audio.musica(G.prog.datos.musica);
 
-  const mundoVisible = () => ['juego', 'pausa', 'victoria', 'derrota', 'titulo'].includes(G.estado);
+  const mundoVisible = () => ['juego', 'pausa', 'victoria', 'derrota', 'titulo', 'campamento', 'mapa', 'ajustes'].includes(G.estado);
 
   function actualizar(dt) {
     G.dt = dt;
@@ -1802,31 +2627,45 @@ window.G = (() => {
       G.combate.actualizar(dt);
       G.actualizarNivel(dt);
       G.actualizarCamara(dt);
-    } else if (G.estado === 'titulo') {
-      G.escena.actualizar(dt); G.tropa.actualizar(dt);
+    } else if (G.estado === 'titulo' || G.estado === 'campamento') {
+      G.escena.actualizar(dt); G.tropa.actualizar(dt); G.combate.actualizar(dt);
     }
   }
   function dibujar(dt) {
     G.luces = [];
+    G.ctx = ctxMundo;
+    const dtv = G.estado === 'pausa' ? 0 : dt;
     if (mundoVisible()) {
       G.escena.dibujarFondo();
       G.enem.dibujar(dt);
       G.tropa.dibujar(dt);
       G.combate.dibujar();
       G.escena.oscuridad();
-      G.escena.niebla();
-      G.escena.agua();
-      G.escena.lluvia(G.estado === 'pausa' ? 0 : dt);
-      G.combate.dibujarTextos();
-    }
+      G.escena.despues(dtv);
+      if (!usarGL) G.escena.agua2D();
+    } else { ctxMundo.fillStyle = '#0D0F16'; ctxMundo.fillRect(0, 0, W, H); }
+    // Capa de interfaz: lluvia, textos flotantes y pantallas
+    G.ctx = capaUI.x;
+    capaUI.x.clearRect(0, 0, W, H);
+    if (mundoVisible()) { G.escena.lluvia(dtv); G.combate.dibujarTextos(); }
     G.ui.dibujar(dt);
+    G.ctx = ctxMundo;
   }
   function presentar() {
     let dx = 0, dy = 0;
-    if (G.temblor > 0) { dx = Math.round((Math.random() - 0.5) * 4 * escala); dy = Math.round((Math.random() - 0.5) * 3 * escala); }
-    pctx.fillStyle = '#0D0F16'; pctx.fillRect(0, 0, pantalla.width, pantalla.height);
-    pctx.drawImage(G.buf, dx, dy, pantalla.width, pantalla.height);
+    if (G.temblor > 0) { dx = (Math.random() - 0.5) * 4; dy = (Math.random() - 0.5) * 3; }
+    if (usarGL) {
+      const p = mundoVisible() ? G.escena.paramsAgua() : { osc: 0, viento: 0, agua: '#000000', cielo: '#000000', luces: [], ondas: [], sinAgua: true };
+      p.temblor = [dx * pantalla.width / W, dy * pantalla.height / H];
+      G.aguaGL.presentar(G.buf, G.bufUI, p);
+    } else {
+      pctx.fillStyle = '#0D0F16'; pctx.fillRect(0, 0, pantalla.width, pantalla.height);
+      const e = pantalla.width / W;
+      pctx.drawImage(G.buf, Math.round(dx * e), Math.round(dy * e), pantalla.width, pantalla.height);
+      pctx.drawImage(G.bufUI, 0, 0, pantalla.width, pantalla.height);
+    }
   }
+  G.presentar = presentar;
   G.paso = (dt) => { if (G.estado !== 'pausa') G.t += dt; actualizar(dt); dibujar(dt); };
 
   // ---- Jugador automático (pruebas): elige la orden y toca en el pulso (bien) o con errores grandes (mal)
@@ -1883,7 +2722,7 @@ window.G = (() => {
       });
     };
     simularNivel(0, 'bien', 60, medir);
-    simularNivel(3, 'bien', 40, medir);
+    simularNivel(6, 'bien', 40, medir);
     salida(`deriva máxima de un pie apoyado: ${deriva.toFixed(4)} px (${peor || '-'}) · pasos: ${pasos}`);
     return;
   }
@@ -1905,9 +2744,10 @@ window.G = (() => {
   }
   if (P.has('auto')) {
     const idx = (+P.get('nivel') || 1) - 1, modo = P.get('auto') === 'mal' ? 'mal' : 'bien';
+    if (P.get('mejoras') !== 'no') G.campana.progresoEsperado(idx);
     const n = simularNivel(idx, modo, 400);
     const vivos = G.tropa.vivas().length;
-    salida(`nivel ${idx + 1} (${n.datos.nombre}) · bot ${modo}: ${n.fin || 'sin terminar'} en ${n.tiempo.toFixed(1)} s · puntos ${n.puntos} · bajas enemigas ${n.bajas} · tropa viva ${vivos}/8 · combo máx ${n.maxCombo}${G.enem.jefe() ? ' · vida del jefe ' + G.enem.jefe().hp : ''}`);
+    salida(`nivel ${idx + 1} (${n.datos.nombre}) · bot ${modo}: ${n.fin || 'sin terminar'} en ${n.tiempo.toFixed(1)} s · puntos ${n.puntos} · bajas enemigas ${n.bajas} · tropa viva ${vivos}/${G.tropa.unidades.length} · combo máx ${n.maxCombo}${G.enem.jefe() ? ' · vida del jefe ' + G.enem.jefe().hp : ''}`);
     return;
   }
   if (P.has('bench')) {
@@ -1920,10 +2760,22 @@ window.G = (() => {
     salida(`BENCH ${n} frames: ${((performance.now() - t0) / n).toFixed(3)} ms/frame (nivel 3, lluvia, noche)`);
     return;
   }
+  if (P.get('prueba') === 'musica') {
+    G.audio.renderizar(P.get('cancion') || 'pradera', +P.get('seg') || 36, P.has('fiebre')).then((r) => {
+      salida(JSON.stringify({ pico: r.pico, rms: r.rms.map((x) => +x.toFixed(3)), wav: r.wav }));
+    }).catch((e) => salida('ERROR ' + e.message));
+    return;
+  }
+  if (P.has('capa')) {                      // depuración: una capa de fondo sola
+    const [b, i] = P.get('capa').split(':'); const c = G.escena._capas(b)[+i].c;
+    G.ctx.fillStyle = '#FF00FF'; G.ctx.fillRect(0, 0, W, H); G.ctx.drawImage(c, -(+P.get('x') || 0), 0);
+    salida(G.buf.toDataURL()); return;
+  }
   if (P.has('shot')) {
     const pant = P.get('pantalla') || 'juego', sim = +P.get('sim') || 3, idx = (+P.get('nivel') || 1) - 1;
     if (pant === 'titulo') { G.cambiarEstado('titulo'); for (let i = 0; i < sim * 60; i++) G.paso(1 / 60); }
-    else if (pant === 'mapa') { G.prog.datos.desbloqueado = +P.get('abiertos') || 3; G.prog.datos.records = { 1: 3120, 2: 2890 }; G.cambiarEstado('mapa'); for (let i = 0; i < 30; i++) G.paso(1 / 60); }
+    else if (pant === 'campamento') { G.prog.datos.monedas = 230; G.cambiarEstado('campamento'); for (let i = 0; i < sim * 60; i++) G.paso(1 / 60); }
+    else if (pant === 'mapa') { G.prog.datos.desbloqueado = +P.get('abiertos') || 4; G.prog.datos.records = { 1: 3120, 2: 2890, 3: 4100 }; G.cambiarEstado('campamento'); G.cambiarEstado('mapa'); for (let i = 0; i < 30; i++) G.paso(1 / 60); }
     else {
       simularNivel(idx, P.get('bot') || 'bien', sim);
       if (pant === 'pausa') G.cambiarEstado('pausa');
@@ -1931,7 +2783,8 @@ window.G = (() => {
       G.paso(1 / 60);
     }
     if (P.has('tactil')) { G.entrada.tactil = true; G.paso(1 / 60); }
-    salida(G.buf.toDataURL());
+    presentar();
+    salida(pantalla.toDataURL());
     return;
   }
 
