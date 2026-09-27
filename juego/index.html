@@ -1,0 +1,1955 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Tambores junto al río</title>
+<style>
+  :root { --fondo: #0d0f16; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --fondo: #0d0f16; } }
+  :root[data-theme="dark"] { --fondo: #0d0f16; }
+  html, body { margin: 0; height: 100%; background: var(--fondo); overflow: hidden; touch-action: none; user-select: none; }
+  canvas { position: absolute; image-rendering: pixelated; image-rendering: crisp-edges; }
+</style>
+</head>
+<body>
+<canvas id="pantalla"></canvas>
+<script>
+// ---- agua.js
+// agua.js — agua pixel art reutilizable (reflejo invertido, ondas "a saltos" a 10 Hz,
+// columnas de luz y espuma en la orilla). Sin dependencias: copia este archivo a tu juego.
+//
+// Uso mínimo (ver demo.html):
+//   const agua = crearAgua({ ancho: 480, alto: 270, yAgua: 190 });
+//   // ...dibuja cielo, fondo y personajes en tu buffer (canvas de 480×270)...
+//   agua.dibujar(ctxBuffer, { t: segundos, camX, viento: 0.5, oscuridad: 0, luces: [...] });
+//
+// Idea: las filas justo encima de la línea del agua se copian volteadas debajo de ella; luego se
+// trocean en tiras de 16×1 px y cada tira se desplaza unos píxeles según una tabla de ruido que solo
+// cambia 10 veces por segundo. Ese "salto" discreto es lo que da el aspecto pixel art.
+(function (global) {
+  // ---- Utilidades (ruido determinista y color)
+  function hash(x, y = 0, s = 0) {
+    let h = (x * 374761393 + y * 668265263 + s * 2246822519) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  }
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  function noise2(x, y, s = 0) {
+    const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
+    const u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy);
+    const a = hash(ix, iy, s), b = hash(ix + 1, iy, s), c = hash(ix, iy + 1, s), d = hash(ix + 1, iy + 1, s);
+    return lerp(lerp(a, b, u), lerp(c, d, u), v);
+  }
+  const rgb = (h) => { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+  const hex = (r, g, b) => '#' + [r, g, b].map((v) => Math.round(clamp(v, 0, 255)).toString(16).padStart(2, '0')).join('');
+  const mezcla = (c1, c2, t) => { const a = rgb(c1), b = rgb(c2); return hex(lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)); };
+  const oscurece = (c, f) => { const a = rgb(c); return hex(a[0] * f, a[1] * f, a[2] * f); };
+  function lienzo(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return { c, x: c.getContext('2d') }; }
+
+  function crearAgua(op = {}) {
+    const W = op.ancho ?? 480, H = op.alto ?? 270, WY = op.yAgua ?? 190;
+    const WH = H - WY;                 // filas de agua
+    const SRC_Y = Math.max(0, WY - WH); // primera fila que se refleja
+    const CW = op.trozo ?? 16, NCX = Math.ceil(W / CW);
+    const BASE = op.color ?? '#686C53';          // color del río
+    const LUZ = op.colorLuz ?? '#FC8F53';        // columnas de luz
+    const REFLEJO = op.reflejo ?? 0.3;           // 30 % de reflectividad
+    const HZ = op.hz ?? 10;                      // frecuencia de las ondas
+
+    const quieta = lienzo(W, WH);
+    const salida = quieta.x.createImageData(W, WH);
+    const out32 = new Uint32Array(salida.data.buffer);
+
+    // Oscurecimiento hacia el fondo: hasta 40 % de negro en bandas de 4 px.
+    const bandas = lienzo(W, WH);
+    { const nb = Math.ceil(WH / 4);
+      for (let i = 0; i < nb; i++) { bandas.x.fillStyle = `rgba(0,0,0,${(0.4 * i / Math.max(1, nb - 1)).toFixed(3)})`; bandas.x.fillRect(0, i * 4, W, 4); } }
+
+    // Columna de luz: guiones horizontales, núcleo intenso, huecos que crecen hacia abajo.
+    function columna(w, h, seed) {
+      const { c, x } = lienzo(w, h), img = x.createImageData(w, h), d = img.data, [r, g, b] = rgb(LUZ), half = w / 2;
+      for (let y = 0; y < h; y++) {
+        const v = y / (h - 1), iv = Math.min(1, (y + 2) / 6) * Math.pow(1 - v, 0.75);
+        const hueco = hash(y, 1, seed) < 0.1 + 0.4 * v;
+        const L = half * (1 - 0.5 * v) * (0.5 + 0.5 * hash(y, 2, seed));
+        const off = w > 8 ? Math.round((hash(y, 3, seed) - 0.5) * 2) : 0;
+        for (let i = 0; i < w; i++) {
+          const e = Math.abs(i + 0.5 - half - off) / Math.max(1, L);
+          if (e >= 1) continue;
+          let a = iv * (e < 0.34 ? 1 : e < 0.7 ? 0.55 : 0.28);
+          if (hueco) a *= e < 0.34 ? 0.45 : 0;
+          a = Math.round(a * 4) / 4;
+          if (a <= 0) continue;
+          const o = (y * w + i) * 4; d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = Math.round(a * 255);
+        }
+      }
+      x.putImageData(img, 0, 0);
+      return c;
+    }
+    const variantes = (w, s) => [0, 1, 2].map((k) => columna(w, 48, s + k * 101));
+    const COL = { chica: variantes(8, 11), grande: variantes(24, 23) };
+
+    // Tabla de ondas: desplazamiento (dx, dy) por trozo de CW×1 px.
+    const NT = NCX * WH, TX = new Int8Array(NT), TY = new Int8Array(NT), TN = new Float32Array(NT);
+    let tick = -1;
+    function tabla(tk, camX, viento) {
+      const t = tk / HZ, ox = camX * 1.5;
+      for (let y = 0; y < WH; y++) {
+        const amp = 0.8 + 0.4 * y / Math.max(1, WH - 1); // más amplitud al fondo
+        const ax = viento * 6 * amp, ay = viento * 12 * amp;
+        const Y1 = (y - t * 5) / 4, Y2 = (y - t * 9) / 3;
+        for (let c = 0; c < NCX; c++) {
+          const X = (c * CW + 8 + ox) / 32;
+          const n = noise2(X + t * 0.04, Y1, 301) * 0.62 + noise2(X * 1.3 - t * 0.07, Y2, 302) * 0.38;
+          const m = noise2(X * 0.9 + 17, Y1 + 5, 303) * 0.62 + noise2(X * 1.4 + 9, Y2 - 3, 304) * 0.38;
+          const k = y * NCX + c;
+          TX[k] = Math.round(clamp((n - 0.5) * 3, -1, 1) * ax);
+          TY[k] = Math.round(clamp((m - 0.5) * 3, -1, 1) * ay);
+          TN[k] = n;
+        }
+      }
+    }
+
+    // ctx: el buffer donde ya dibujaste la escena (se lee de él para el reflejo y se escribe el agua).
+    // e: { t, camX, viento (0–1), oscuridad (0–1), colorNoche, luces: [{ x, y, tam: 'chica'|'grande', fuerza }] }
+    //    x de las luces en coordenadas de pantalla.
+    function dibujar(ctx, e = {}) {
+      const t = e.t ?? 0, camX = e.camX ?? 0, viento = e.viento ?? 0.5, osc = e.oscuridad ?? 0;
+      const base = mezcla(BASE, e.colorNoche ?? '#141A2E', osc * 0.8);
+      const s = quieta.x;
+      // 1. Agua quieta: color, bandas, reflejo volteado, columnas de luz.
+      s.setTransform(1, 0, 0, 1, 0, 0); s.globalCompositeOperation = 'source-over'; s.globalAlpha = 1;
+      s.fillStyle = base; s.fillRect(0, 0, W, WH);
+      s.drawImage(bandas.c, 0, 0);
+      s.globalAlpha = REFLEJO;
+      s.setTransform(1, 0, 0, -1, 0, WH); // la fila justo encima del agua queda pegada a ella
+      s.drawImage(ctx.canvas, 0, SRC_Y, W, WY - SRC_Y, 0, WH - (WY - SRC_Y), W, WY - SRC_Y);
+      s.setTransform(1, 0, 0, 1, 0, 0);
+      const tk = Math.floor(t * HZ);
+      const k = osc * 0.8 * Math.min(1, viento * 10);
+      if (k > 0.003 && e.luces) {
+        s.globalCompositeOperation = 'lighter';
+        for (const L of e.luces) {
+          const set = COL[L.tam ?? 'chica'];
+          const spr = set[(tk + Math.floor(hash(Math.round(L.x * 7), 5) * 3)) % 3];
+          const x0 = Math.round(L.x) - (spr.width >> 1), top = Math.round((WY - L.y) * 0.3);
+          if (x0 + spr.width < 0 || x0 > W || top >= WH) continue;
+          s.globalAlpha = clamp(k * (L.fuerza ?? 1), 0, 1);
+          s.drawImage(spr, x0, top);
+        }
+        s.globalCompositeOperation = 'source-over'; s.globalAlpha = 1;
+      }
+      s.globalAlpha = 1;
+
+      // 2. Ondas: la tabla cambia a HZ; cada trozo se copia desplazado (vecino más cercano, sin mezcla).
+      if (tk !== tick) { tick = tk; tabla(tk, camX, viento); }
+      const src = new Uint32Array(s.getImageData(0, 0, W, WH).data.buffer);
+      for (let y = 0, k2 = 0; y < WH; y++) {
+        const row = y * W;
+        for (let c = 0; c < NCX; c++, k2++) {
+          let sy = y + TY[k2]; sy = sy < 0 ? 0 : sy >= WH ? WH - 1 : sy;
+          const srow = sy * W, x0 = c * CW, dx = TX[k2];
+          for (let i = 0; i < CW && x0 + i < W; i++) {
+            let sx = x0 + i - dx; sx = sx < 0 ? 0 : sx >= W ? W - 1 : sx;
+            out32[row + x0 + i] = src[srow + sx];
+          }
+        }
+      }
+      ctx.putImageData(salida, 0, WY);
+
+      // 3. Orilla: línea húmeda y espuma que late con la tabla.
+      ctx.fillStyle = oscurece(base, 0.72); ctx.fillRect(0, WY, W, 1);
+      ctx.fillStyle = mezcla(base, '#C9CDB8', 0.4 * (1 - osc * 0.6));
+      ctx.globalAlpha = 0.35 + 0.45 * Math.min(1, viento);
+      for (let c = 0; c < NCX; c++) {
+        if (TN[c] < 0.6) continue;
+        ctx.fillRect(c * CW + Math.floor(hash(c, tick, 9) * 9), WY + 1, 2 + Math.floor(hash(c, tick, 10) * 5), 1);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    return { dibujar, yAgua: WY };
+  }
+
+  global.crearAgua = crearAgua;
+})(window);
+
+</script>
+<script>
+// ---- 00_nucleo.js
+// 00_nucleo.js — espacio de nombres G, utilidades, dibujo pixel, fuente 3×5, eventos y registro de módulos.
+window.G = (() => {
+  const G = {
+    W: 480, H: 270, WY: 190, GY: 176, BEAT: 0.5,
+    t: 0, dt: 1 / 60, camX: 0,
+    P: new URLSearchParams(location.search),
+    estado: 'titulo',
+    luces: [],
+  };
+  G.prueba = G.P.has('shot') || G.P.has('prueba') || G.P.has('auto') || G.P.has('bench');
+
+  // ---- Eventos
+  const ev = {};
+  G.on = (n, f) => (ev[n] = ev[n] || []).push(f);
+  G.emit = (n, a) => { for (const f of ev[n] || []) f(a); };
+
+  // ---- Utilidades numéricas y de color
+  const U = G.u = {};
+  U.hash = (x, y = 0, s = 0) => {
+    let h = (x * 374761393 + y * 668265263 + s * 2246822519) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177); h = Math.imul(h ^ (h >>> 16), 2246822519);
+    return ((h ^ (h >>> 13)) >>> 0) / 4294967296;
+  };
+  U.lerp = (a, b, t) => a + (b - a) * t;
+  U.clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  U.smooth = (u) => { u = U.clamp(u, 0, 1); return u * u * (3 - 2 * u); };
+  U.easeOut = (u) => 1 - (1 - u) * (1 - u);
+  U.rgb = (h) => { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+  U.hex = (r, g, b) => '#' + [r, g, b].map((v) => Math.round(U.clamp(v, 0, 255)).toString(16).padStart(2, '0')).join('');
+  U.mix = (a, b, t) => { const x = U.rgb(a), y = U.rgb(b); return U.hex(U.lerp(x[0], y[0], t), U.lerp(x[1], y[1], t), U.lerp(x[2], y[2], t)); };
+  U.shade = (c, f) => { const x = U.rgb(c); return U.hex(x[0] * f, x[1] * f, x[2] * f); };
+  U.noise1 = (x, s = 0) => { const i = Math.floor(x), f = x - i; return U.lerp(U.hash(i, 0, s), U.hash(i + 1, 0, s), f * f * (3 - 2 * f)); };
+  U.rng = (seed) => () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+
+  // ---- Lienzos
+  G.lienzo = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return { c, x: c.getContext('2d', { willReadFrequently: true }) }; };
+  const buf = G.lienzo(G.W, G.H);
+  G.buf = buf.c; G.ctx = buf.x;
+
+  // ---- Dibujo en píxeles enteros
+  const D = G.d = {};
+  D.rect = (x, y, w, h, c, g = G.ctx) => { g.fillStyle = c; g.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h)); };
+  D.disco = (cx, cy, r, c, g = G.ctx) => {
+    g.fillStyle = c; cx = Math.round(cx); cy = Math.round(cy);
+    for (let dy = -r; dy <= r; dy++) { const hw = Math.floor(Math.sqrt(r * r - dy * dy) + 0.5); g.fillRect(cx - hw, cy + dy, hw * 2 + 1, 1); }
+  };
+  // Línea de Bresenham; grosor g ≥ 1 dibuja cuadrados g×g en cada punto.
+  D.linea = (x0, y0, x1, y1, c, gr = 1, g = G.ctx) => {
+    x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+    g.fillStyle = c;
+    const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, o = gr >> 1;
+    let e = dx + dy, n = 0;
+    for (;;) {
+      g.fillRect(x0 - o, y0 - o, gr, gr);
+      if ((x0 === x1 && y0 === y1) || ++n > 2000) break;
+      const e2 = 2 * e;
+      if (e2 >= dy) { e += dy; x0 += sx; }
+      if (e2 <= dx) { e += dx; y0 += sy; }
+    }
+  };
+
+  // ---- Fuente pixel 3×5 (cada fila: 3 bits)
+  const F = {
+    A: [2, 5, 7, 5, 5], B: [6, 5, 6, 5, 6], C: [3, 4, 4, 4, 3], D: [6, 5, 5, 5, 6], E: [7, 4, 6, 4, 7], F: [7, 4, 6, 4, 4],
+    G: [3, 4, 5, 5, 3], H: [5, 5, 7, 5, 5], I: [7, 2, 2, 2, 7], J: [1, 1, 1, 5, 2], K: [5, 5, 6, 5, 5], L: [4, 4, 4, 4, 7],
+    M: [5, 7, 7, 5, 5], N: [6, 5, 5, 5, 5], O: [2, 5, 5, 5, 2], P: [6, 5, 6, 4, 4], Q: [2, 5, 5, 6, 3], R: [6, 5, 6, 5, 5],
+    S: [3, 4, 2, 1, 6], T: [7, 2, 2, 2, 2], U: [5, 5, 5, 5, 7], V: [5, 5, 5, 5, 2], W: [5, 5, 7, 7, 5], X: [5, 5, 2, 5, 5],
+    Y: [5, 5, 2, 2, 2], Z: [7, 1, 2, 4, 7],
+    0: [7, 5, 5, 5, 7], 1: [2, 6, 2, 2, 7], 2: [6, 1, 2, 4, 7], 3: [6, 1, 2, 1, 6], 4: [5, 5, 7, 1, 1], 5: [7, 4, 6, 1, 6],
+    6: [3, 4, 7, 5, 7], 7: [7, 1, 2, 2, 2], 8: [7, 5, 7, 5, 7], 9: [7, 5, 7, 1, 6],
+    '!': [2, 2, 2, 0, 2], '¡': [2, 0, 2, 2, 2], '?': [6, 1, 2, 0, 2], '¿': [2, 0, 2, 4, 3], '.': [0, 0, 0, 0, 2], ',': [0, 0, 0, 2, 4],
+    ':': [0, 2, 0, 2, 0], '-': [0, 0, 7, 0, 0], '+': [0, 2, 7, 2, 0], '/': [1, 1, 2, 4, 4], '×': [0, 5, 2, 5, 0], '%': [5, 1, 2, 4, 5],
+    "'": [2, 2, 0, 0, 0], '(': [1, 2, 2, 2, 1], ')': [4, 2, 2, 2, 4], '<': [1, 2, 4, 2, 1], '>': [4, 2, 1, 2, 4], '=': [0, 7, 0, 7, 0],
+    '·': [0, 0, 2, 0, 0], ' ': [0, 0, 0, 0, 0],
+  };
+  const limpia = (s) => String(s).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  D.anchoTexto = (s, e = 1) => limpia(s).length * 4 * e - e;
+  // alin: 'izq' | 'centro' | 'der'; sombra: color de la sombra 1 px abajo
+  D.texto = (s, x, y, c = '#FFFFFF', e = 1, alin = 'izq', sombra = null, g = G.ctx) => {
+    s = limpia(s);
+    let px = Math.round(alin === 'centro' ? x - D.anchoTexto(s, e) / 2 : alin === 'der' ? x - D.anchoTexto(s, e) : x);
+    y = Math.round(y);
+    if (sombra) D.texto(s, px + (alin === 'izq' ? 0 : 0), y + e, sombra, e, 'izq', null, g);
+    g.fillStyle = c;
+    for (const ch of s) {
+      const f = F[ch] || F[' '];
+      for (let r = 0; r < 5; r++) for (let b = 0; b < 3; b++) if (f[r] & (4 >> b)) g.fillRect(px + b * e, y + r * e, e, e);
+      px += 4 * e;
+    }
+  };
+
+  // ---- Módulos: G.registrar(nombre, { orden, iniciar, actualizar(dt), ... })
+  G.mods = [];
+  G.registrar = (nombre, m) => { m.nombre = nombre; G.mods.push(m); G.mods.sort((a, b) => (a.orden || 0) - (b.orden || 0)); return m; };
+  G.llamar = (fn, ...a) => { for (const m of G.mods) if (m[fn]) m[fn](...a); };
+
+  // ---- Estados de pantalla (los define la UI)
+  G.cambiarEstado = (e, datos) => { const antes = G.estado; G.estado = e; G.emit('estado', { antes, ahora: e, datos }); };
+
+  return G;
+})();
+
+</script>
+<script>
+// ---- 10_audio.js
+// 10_audio.js — música y sonidos sintetizados con Web Audio (sin archivos).
+// El reloj del audio es el reloj del juego: G.t = ac.currentTime - desfase. Así notas, pasos y golpes
+// nunca se separan. Las notas se programan con 0.15 s de margen (planificador sin cortes).
+(function (G) {
+  const U = G.u, BEAT = G.BEAT, CORCHEA = BEAT / 2;
+  const N = { G2: 98, A2: 110, C3: 130.8, D3: 146.8, E3: 164.8, G3: 196, A3: 220, C4: 261.6, D4: 293.7, E4: 329.6,
+    G4: 392, A4: 440, C5: 523.3, D5: 587.3, E5: 659.3, G5: 784, A5: 880 };
+  // Temas: melodía en corcheas (32 = 4 compases) y bajo por pulso (16). null = silencio.
+  const _ = null;
+  const TEMAS = [
+    { mel: ['E4', _, _, 'G4', 'A4', _, _, _, 'G4', _, 'E4', _, 'D4', _, _, _, 'E4', _, _, 'G4', 'A4', _, 'C5', _, 'A4', _, _, _, _, _, _, _],
+      bajo: ['A2', _, 'E3', _, 'C3', _, 'G2', _, 'A2', _, 'E3', _, 'C3', _, 'E3', _], vol: 0.05 },
+    { mel: ['A4', _, 'C5', 'A4', 'G4', _, 'E4', _, 'D4', 'E4', 'G4', _, 'A4', _, _, _, 'A4', _, 'C5', 'D5', 'E5', _, 'D5', 'C5', 'A4', _, 'G4', 'E4', 'A4', _, _, _],
+      bajo: ['A2', 'A2', 'E3', 'A2', 'C3', 'C3', 'G3', 'E3', 'A2', 'A2', 'E3', 'A2', 'D3', 'D3', 'E3', 'E3'], vol: 0.065 },
+    { mel: ['E5', _, 'D5', _, 'C5', _, 'A4', _, 'C5', _, 'D5', 'E5', 'D5', _, _, _, 'G4', _, 'A4', _, 'C5', _, 'D5', _, 'C5', 'A4', 'G4', _, 'A4', _, _, _],
+      bajo: ['A2', _, 'A2', 'E3', 'G2', _, 'G2', 'D3', 'C3', _, 'C3', 'G3', 'E3', _, 'E3', 'A2'], vol: 0.06 },
+    { mel: ['A4', 'A4', _, 'C5', _, 'A4', 'G4', _, 'E4', _, 'G4', 'A4', _, _, 'E4', _, 'D4', 'D4', _, 'E4', _, 'G4', 'A4', _, 'C5', _, 'A4', _, 'E4', _, _, _],
+      bajo: ['A2', 'A2', 'A2', 'G2', 'E3', 'E3', 'D3', 'C3', 'A2', 'A2', 'A2', 'G2', 'E3', 'E3', 'E3', 'E3'], vol: 0.065 },
+    { mel: ['A4', _, 'A4', 'C5', 'E5', _, 'D5', 'C5', 'A4', _, 'A4', 'C5', 'D5', _, 'E5', _, 'G5', _, 'E5', 'D5', 'C5', _, 'D5', 'E5', 'A4', _, 'C5', _, 'A4', _, _, _],
+      bajo: ['A2', 'E3', 'A2', 'E3', 'G2', 'D3', 'G2', 'D3', 'C3', 'G3', 'C3', 'G3', 'E3', 'E3', 'E3', 'E3'], vol: 0.07 },
+  ];
+  // Contramelodía de fiebre: arpegio en corcheas una octava arriba.
+  const FIEBRE = ['A5', 'E5', 'C5', 'E5', 'G5', 'E5', 'D5', 'E5'];
+  const CANTOS = {
+    marchar: ['E5', 'E5', 'E5', 'A4'], atacar: ['A4', 'A4', 'E5', 'A4'], defender: ['C5', 'C5', 'E5', 'A4'],
+    retroceder: ['A4', 'E5', 'A4', 'E5'], cargar: ['A4', 'A4', 'G5', 'G5'],
+  };
+  const TAMBOR = { PATA: [200, 0.13, 0.4, 'triangle'], PON: [128, 0.16, 0.45, 'triangle'], CHAKA: [0, 0.08, 0.35, 'ruido'], DON: [70, 0.3, 0.55, 'sine'] };
+
+  let ac = null, maestro = null, ruido = null, desfase = 0, prog = 0, pausado = false;
+  let musicaOn = true, tema = 0, fiebre = false, canto = null, metronomo = false;
+
+  function crearRuido() {
+    const b = ac.createBuffer(1, ac.sampleRate * 0.5, ac.sampleRate), d = b.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    return b;
+  }
+  function nota(f, cuando, dur, vol, tipo = 'triangle', caida = 1) {
+    if (!ac) return;
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, cuando);
+    g.gain.linearRampToValueAtTime(vol, cuando + 0.006);
+    g.gain.exponentialRampToValueAtTime(0.0001, cuando + dur);
+    g.connect(maestro);
+    if (tipo === 'ruido') {
+      const s = ac.createBufferSource(), fl = ac.createBiquadFilter();
+      s.buffer = ruido; fl.type = 'bandpass'; fl.frequency.value = f || 3000; fl.Q.value = 0.8;
+      s.connect(fl).connect(g); s.start(cuando); s.stop(cuando + dur + 0.02);
+      return;
+    }
+    const o = ac.createOscillator();
+    o.type = tipo; o.frequency.setValueAtTime(f, cuando);
+    if (caida !== 1) o.frequency.exponentialRampToValueAtTime(Math.max(20, f * caida), cuando + dur);
+    o.connect(g); o.start(cuando); o.stop(cuando + dur + 0.02);
+  }
+
+  const A = G.audio = {
+    iniciar() {
+      if (ac || G.prueba) return;
+      try {
+        ac = new (window.AudioContext || window.webkitAudioContext)();
+        maestro = ac.createGain(); maestro.gain.value = 0.9; maestro.connect(ac.destination);
+        ruido = crearRuido();
+        desfase = ac.currentTime - G.t;
+        prog = Math.ceil(G.t / CORCHEA);
+      } catch (_) { ac = null; }
+    },
+    activo: () => !!ac && ac.state === 'running' && !pausado,
+    // Tiempo del juego según el audio (o null si no hay audio)
+    reloj: () => (ac && !pausado ? ac.currentTime - desfase : null),
+    pausar(p) {
+      pausado = p;
+      if (!ac) return;
+      if (p) ac.suspend(); else ac.resume().then(() => { desfase = ac.currentTime - G.t; prog = Math.ceil(G.t / CORCHEA); });
+    },
+    musica(on) { if (on !== undefined) musicaOn = on; return musicaOn; },
+    tema(n) { tema = U.clamp(n, 0, TEMAS.length - 1); },
+    fiebre(b) { fiebre = b; },
+    metronomo(b) { metronomo = b; },
+    canto(orden, pulso0) { canto = { orden, pulso0 }; },
+    tambor(tipo) {
+      if (!ac) return;
+      const [f, d, v, ti] = TAMBOR[tipo];
+      nota(ti === 'ruido' ? 4200 : f, ac.currentTime, d, v, ti, ti === 'ruido' ? 1 : 0.5);
+      if (tipo === 'DON') nota(0, ac.currentTime, 0.12, 0.2, 'ruido');
+    },
+    sfx(nombre, vol = 1) {
+      if (!ac) return;
+      const t0 = ac.currentTime;
+      switch (nombre) {
+        case 'golpe': nota(900, t0, 0.07, 0.18 * vol, 'ruido'); nota(160, t0, 0.1, 0.18 * vol, 'square', 0.4); break;
+        case 'escudo': nota(1400, t0, 0.09, 0.08 * vol, 'square', 0.9); nota(2100, t0, 0.06, 0.05 * vol, 'square', 0.9); break;
+        case 'flecha': nota(1200, t0, 0.18, 0.05 * vol, 'triangle', 0.4); break;
+        case 'muerte': nota(300, t0, 0.35, 0.14 * vol, 'square', 0.25); break;
+        case 'jefe': nota(55, t0, 0.6, 0.5 * vol, 'sine', 0.5); nota(400, t0, 0.4, 0.3 * vol, 'ruido'); break;
+        case 'aviso': nota(880, t0, 0.08, 0.08 * vol, 'square'); nota(880, t0 + 0.12, 0.08, 0.08 * vol, 'square'); break;
+        case 'menu': nota(660, t0, 0.06, 0.08 * vol, 'square'); break;
+        case 'ok': nota(660, t0, 0.07, 0.08 * vol, 'square'); nota(990, t0 + 0.07, 0.1, 0.08 * vol, 'square'); break;
+        case 'fallo': nota(90, t0, 0.25, 0.2 * vol, 'square', 0.8); break;
+        case 'fiebre': [523, 659, 784, 1047].forEach((f, i) => nota(f, t0 + i * 0.06, 0.15, 0.07, 'square')); break;
+        case 'victoria': ['A4', 'C5', 'E5', 'A5', 'E5', 'A5'].forEach((n, i) => nota(N[n], t0 + i * 0.13, i === 5 ? 0.6 : 0.16, 0.09, 'square')); break;
+        case 'derrota': ['E4', 'D4', 'C4', 'A3'].forEach((n, i) => nota(N[n], t0 + i * 0.22, 0.3, 0.09, 'triangle')); break;
+      }
+    },
+    actualizar() {
+      if (!ac || pausado) return;
+      const hasta = ac.currentTime - desfase + 0.15;
+      const T = TEMAS[tema];
+      while (prog * CORCHEA < hasta) {
+        const n = prog++, cuando = n * CORCHEA + desfase;
+        if (cuando < ac.currentTime - 0.01) continue;
+        const enPulso = n % 2 === 0, pulso = n >> 1;
+        if (musicaOn) {
+          const m = T.mel[n % T.mel.length];
+          if (m) nota(N[m], cuando, 0.2, T.vol, 'square');
+          if (enPulso) { const b = T.bajo[pulso % T.bajo.length]; if (b) nota(N[b], cuando, 0.42, 0.14, 'triangle'); }
+          nota(n % 2 ? 6000 : 8000, cuando, 0.025, n % 2 ? 0.008 : 0.014, 'ruido');
+          if (fiebre) {
+            nota(N[FIEBRE[n % FIEBRE.length]], cuando, 0.12, 0.03, 'square');
+            if (enPulso) nota(60, cuando, 0.15, 0.28, 'sine', 0.5);                  // bombo
+            if (enPulso && pulso % 2 === 1) nota(2500, cuando, 0.1, 0.07, 'ruido');   // caja
+          }
+        }
+        if (metronomo && enPulso) nota(pulso % 4 === 0 ? 1320 : 880, cuando, 0.05, 0.1, 'square');
+        if (canto && enPulso) {
+          const k = pulso - canto.pulso0;
+          if (k >= 0 && k < 4) {
+            const f = N[CANTOS[canto.orden][k]];
+            nota(f, cuando, 0.28, 0.07, 'sawtooth', 0.97); nota(f * 1.5, cuando, 0.28, 0.03, 'square', 0.97);
+          }
+          if (k >= 4) canto = null;
+        }
+      }
+    },
+  };
+  // Envolvente de la melodía para que los personajes se muevan con la música (determinista, sin audio).
+  A.pulsoMelodia = (tt) => {
+    const T = TEMAS[tema], n = Math.floor(tt / CORCHEA), m = T.mel[((n % T.mel.length) + T.mel.length) % T.mel.length];
+    return m ? { e: Math.exp(-(tt - n * CORCHEA) * 12), alto: (N[m] - 400) / 400 } : { e: 0, alto: 0 };
+  };
+})(window.G);
+
+</script>
+<script>
+// ---- 11_ritmo.js
+// 11_ritmo.js — juicio de golpes, secuencias de 4 tambores, órdenes, combo y modo fiebre.
+// Ciclo estilo Patapon: el jugador toca 4 golpes seguidos (uno por pulso); la tropa cumple la orden
+// durante los 4 pulsos siguientes y la canta; después el jugador vuelve a tocar para mantener el combo.
+(function (G) {
+  const U = G.u, BEAT = G.BEAT;
+  const ORDENES = {
+    'PATA PATA PATA PON': 'marchar',
+    'PON PON PATA PON': 'atacar',
+    'CHAKA CHAKA PATA PON': 'defender',
+    'PON PATA PON PATA': 'retroceder',
+    'PON PON CHAKA CHAKA': 'cargar',
+  };
+  const PERFECTO = 0.06, BIEN = 0.13, FIEBRE_COMBO = 4;
+
+  const R = G.ritmo = {
+    ORDENES, sec: [], ejec: null, combo: 0, fiebre: false, ultimo: -99, pulsoActual: -1, perfectos: 0, fallos: 0,
+    reiniciar() { R.sec = []; R.ejec = null; R.combo = 0; R.fiebre = false; R.ultimo = -99; R.perfectos = 0; R.fallos = 0; G.audio.fiebre(false); },
+    latencia: () => (G.prog ? G.prog.datos.latencia : 0) / 1000,
+    romper(motivo) {
+      if (R.combo > 0 || R.fiebre) G.emit('combo_roto', motivo);
+      R.combo = 0;
+      if (R.fiebre) { R.fiebre = false; G.audio.fiebre(false); }
+    },
+    // tiempo: opcional (pruebas); por defecto el reloj del juego
+    golpe(tipo, tiempo = G.t) {
+      G.audio.tambor(tipo);
+      const tt = tiempo - R.latencia(), b = Math.round(tt / BEAT), err = tt - b * BEAT, ae = Math.abs(err);
+      const juicio = ae <= PERFECTO ? 'perfecto' : ae <= BIEN ? 'bien' : 'fallo';
+      const info = { tipo, juicio, err, b };
+      // Tocar mientras la tropa cumple la orden rompe el combo (hay que escuchar).
+      if (R.ejec && b < R.ejec.pulso0 + 4) {
+        info.juicio = 'espera'; G.emit('golpe', info); R.romper('espera'); R.fallos++; return info;
+      }
+      if (juicio === 'fallo') {
+        R.sec = []; R.fallos++; G.emit('golpe', info); R.romper('fuera de ritmo'); G.audio.sfx('fallo', 0.6); return info;
+      }
+      const ult = R.sec[R.sec.length - 1];
+      if (ult && b === ult.b) { R.sec = []; info.juicio = 'fallo'; R.fallos++; G.emit('golpe', info); R.romper('doble golpe'); return info; }
+      if (ult && b !== ult.b + 1) R.sec = [];
+      if (juicio === 'perfecto') R.perfectos++;
+      R.sec.push(info); R.ultimo = b;
+      G.emit('golpe', info);
+      if (R.sec.length >= 4) {
+        const ult4 = R.sec.slice(-4), clave = ult4.map((s) => s.tipo).join(' '), orden = ORDENES[clave];
+        if (orden) {
+          const potencia = ult4.reduce((a, s) => a + (s.juicio === 'perfecto' ? 1.2 : 0.9), 0) / 4;
+          R.combo++;
+          const pulso0 = b + 1;
+          R.ejec = { orden, pulso0, inicio: pulso0 * BEAT, fin: (pulso0 + 4) * BEAT, potencia };
+          R.sec = [];
+          if (!R.fiebre && R.combo >= FIEBRE_COMBO) { R.fiebre = true; G.audio.fiebre(true); G.audio.sfx('fiebre'); G.emit('fiebre', true); }
+          G.audio.canto(orden, pulso0);
+          G.emit('orden', R.ejec);
+        } else if (R.sec.length >= 4) {
+          R.sec = R.sec.slice(-3);        // ventana deslizante: los últimos 3 aún pueden empezar una orden
+        }
+      }
+      return info;
+    },
+    // La orden en curso (solo durante sus 4 pulsos)
+    ordenActiva: () => (R.ejec && G.t >= R.ejec.inicio - 0.02 && G.t < R.ejec.fin ? R.ejec : null),
+    actualizar() {
+      const b = Math.floor(G.t / BEAT);
+      if (b !== R.pulsoActual) { R.pulsoActual = b; G.emit('pulso', b); }
+      if (R.ejec && G.t >= R.ejec.fin) { G.emit('fin_orden', R.ejec); R.ultimo = R.ejec.pulso0 + 3; R.ejec = null; }
+      const ahora = G.t / BEAT;
+      if (R.sec.length && ahora > R.sec[R.sec.length - 1].b + 1.6) { R.sec = []; G.emit('secuencia_perdida'); }
+      if (!R.ejec && R.combo > 0 && ahora > R.ultimo + 2.6) R.romper('silencio');
+    },
+  };
+})(window.G);
+
+</script>
+<script>
+// ---- 12_entrada.js
+// 12_entrada.js — teclado, táctil y mando. Emite:
+//   'tambor' (PATA | PON | CHAKA | DON) durante el juego, y 'tecla' (izq | der | arriba | abajo | ok | atras | pausa)
+// para los menús. La UI decide qué hacer según G.estado.
+(function (G) {
+  const TAMBORES = { KeyA: 'PATA', KeyJ: 'PATA', ArrowLeft: 'PATA', KeyD: 'PON', KeyL: 'PON', ArrowRight: 'PON',
+    KeyW: 'CHAKA', KeyI: 'CHAKA', ArrowUp: 'CHAKA', KeyS: 'DON', KeyK: 'DON', ArrowDown: 'DON' };
+  const MENU = { ArrowLeft: 'izq', KeyA: 'izq', ArrowRight: 'der', KeyD: 'der', ArrowUp: 'arriba', KeyW: 'arriba',
+    ArrowDown: 'abajo', KeyS: 'abajo', Enter: 'ok', Space: 'ok', KeyJ: 'ok', Escape: 'atras', Backspace: 'atras',
+    KeyP: 'pausa' };
+  const E = G.entrada = { tactil: false, ultima: 0 };
+
+  function primerGesto() { G.audio.iniciar(); }
+  addEventListener('keydown', (e) => {
+    if (e.repeat) return;
+    primerGesto();
+    E.ultima = performance.now();
+    if (G.estado === 'juego') {
+      if (e.code === 'Escape' || e.code === 'KeyP') { G.emit('tecla', 'pausa'); e.preventDefault(); return; }
+      const t = TAMBORES[e.code];
+      if (t) { G.emit('tambor', t); e.preventDefault(); }
+      return;
+    }
+    if (G.estado === 'calibrar' && TAMBORES[e.code]) { G.emit('tambor', TAMBORES[e.code]); e.preventDefault(); }
+    const m = MENU[e.code];
+    if (m) { G.emit('tecla', m); e.preventDefault(); }
+  });
+
+  // ---- Táctil / ratón: la UI define zonas en coordenadas del buffer (480×270)
+  E.zonas = [];   // [{ x, y, w, h, tambor?, tecla?, accion? }]
+  function aBuffer(ev) {
+    const c = G.pantalla, r = c.getBoundingClientRect();
+    return { x: (ev.clientX - r.left) / r.width * G.W, y: (ev.clientY - r.top) / r.height * G.H };
+  }
+  function toque(ev) {
+    primerGesto();
+    if (ev.pointerType === 'touch') E.tactil = true;
+    const p = aBuffer(ev);
+    for (const z of E.zonas) {
+      if (p.x >= z.x && p.x < z.x + z.w && p.y >= z.y && p.y < z.y + z.h) {
+        if (z.tambor) G.emit('tambor', z.tambor);
+        else if (z.tecla) G.emit('tecla', z.tecla);
+        else if (z.accion) z.accion();
+        ev.preventDefault();
+        return;
+      }
+    }
+    if (G.estado !== 'juego') G.emit('tecla', 'ok');   // tocar en cualquier sitio = aceptar
+  }
+  addEventListener('DOMContentLoaded', () => {
+    G.pantalla.addEventListener('pointerdown', toque);
+    G.pantalla.addEventListener('contextmenu', (e) => e.preventDefault());
+  });
+
+  // ---- Mando: X=PATA, B=PON, Y=CHAKA, A=DON, Start=pausa; cruceta para menús
+  const antes = {};
+  E.actualizar = () => {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (const p of pads) {
+      if (!p) continue;
+      const bot = (i) => p.buttons[i] && p.buttons[i].pressed;
+      const mapa = G.estado === 'juego'
+        ? { 2: ['tambor', 'PATA'], 1: ['tambor', 'PON'], 3: ['tambor', 'CHAKA'], 0: ['tambor', 'DON'], 9: ['tecla', 'pausa'] }
+        : { 14: ['tecla', 'izq'], 15: ['tecla', 'der'], 12: ['tecla', 'arriba'], 13: ['tecla', 'abajo'], 0: ['tecla', 'ok'], 1: ['tecla', 'atras'], 9: ['tecla', 'ok'] };
+      for (const k in mapa) {
+        const id = p.index + ':' + k, on = bot(+k);
+        if (on && !antes[id]) { primerGesto(); G.emit(mapa[k][0], mapa[k][1]); }
+        antes[id] = on;
+      }
+    }
+  };
+})(window.G);
+
+</script>
+<script>
+// ---- 13_progreso.js
+// 13_progreso.js — guardado local (niveles superados, récords, ajustes). Si el navegador no deja guardar,
+// el juego sigue igual sin guardar.
+(function (G) {
+  const CLAVE = 'tambores-junto-al-rio-v1';
+  const base = () => ({ desbloqueado: 1, records: {}, latencia: 0, musica: true, vistoTutorial: false });
+  const P = G.prog = { datos: base() };
+  P.cargar = () => {
+    if (G.prueba) return;
+    try { const s = localStorage.getItem(CLAVE); if (s) P.datos = Object.assign(base(), JSON.parse(s)); } catch (_) {}
+  };
+  P.guardar = () => { if (G.prueba) return; try { localStorage.setItem(CLAVE, JSON.stringify(P.datos)); } catch (_) {} };
+  P.superar = (nivel, puntos) => {
+    P.datos.desbloqueado = Math.max(P.datos.desbloqueado, nivel + 1);
+    P.datos.records[nivel] = Math.max(P.datos.records[nivel] || 0, puntos);
+    P.guardar();
+  };
+  P.cargar();
+})(window.G);
+
+</script>
+<script>
+// ---- 20_esqueleto.js
+// 20_esqueleto.js — stickman pixel art reutilizable (tropa, enemigos y jefe).
+// Cadera → torso → cabeza; piernas y brazos de 2 huesos resueltos con IK (ley de cosenos).
+// Pies con memoria: un pie apoyado queda clavado en su punto del MUNDO y solo cambia de sitio dando un
+// paso, así nunca patina aunque la cadera acelere, frene, retroceda o dé una estocada.
+(function (G) {
+  const U = G.u, D = G.d, BEAT = G.BEAT;
+
+  function ik(ax, ay, bx, by, l1, l2, dobla) {
+    let dx = bx - ax, dy = by - ay, d = Math.hypot(dx, dy) || 0.001;
+    const max = l1 + l2 - 0.01;
+    if (d > max) { bx = ax + dx / d * max; by = ay + dy / d * max; d = max; }
+    const a = Math.atan2(by - ay, bx - ax);
+    const c = U.clamp((l1 * l1 + d * d - l2 * l2) / (2 * l1 * d), -1, 1);
+    const ang = a + dobla * Math.acos(c);
+    return { jx: ax + Math.cos(ang) * l1, jy: ay + Math.sin(ang) * l1, ex: bx, ey: by };
+  }
+  function miembro(ax, ay, bx, by, l1, l2, dobla, col, gr) {
+    const r = ik(ax, ay, bx, by, l1, l2, dobla);
+    D.linea(ax, ay, r.jx, r.jy, col, gr); D.linea(r.jx, r.jy, r.ex, r.ey, col, gr);
+    return r;
+  }
+
+  function moverPie(pie, dest, s, lift) {
+    const u = U.clamp(s, 0, 1);
+    pie.x = pie.sw.desde + (dest - pie.sw.desde) * U.smooth(u);
+    pie.y = G.GY - 1 - lift * Math.sin(Math.PI * u);
+  }
+  function actualizarPies(e, hipW, vx, reposo, dt) {
+    const s = e.escala, velo = Math.abs(vx);
+    if (!e.pies) e.pies = reposo.map((o) => ({ x: hipW + o, y: G.GY - 1, sw: null }));
+    const marcha = velo > 2;
+    const ciclo = velo > 35 ? BEAT / 2 : BEAT;
+    const p = (((G.t - e.retraso) % ciclo) + ciclo) % ciclo / ciclo;
+    e.pFase = p; e.marcha = marcha;
+    e.pies.forEach((pie, k) => {
+      if (marcha) {
+        const u = (p + k * 0.5) % 1;
+        if (u < 0.5) {
+          if (pie.sw) { pie.x = pie.sw.dest; pie.sw = null; }
+          pie.y = G.GY - 1;
+        } else {
+          const s2 = (u - 0.5) / 0.5;
+          if (!pie.sw) pie.sw = { desde: pie.x, s: 0, dur: ciclo / 2 };
+          pie.sw.s = s2;
+          pie.sw.dest = hipW + vx * (1 - s2) * ciclo / 2 + Math.sign(vx) * velo * ciclo / 4;
+          moverPie(pie, pie.sw.dest, s2, 3 * s);
+        }
+      } else {
+        const dest = hipW + reposo[k];
+        if (pie.sw) {
+          if (pie.sw.dur === undefined || pie.sw.dur <= 0) pie.sw.dur = 0.16;
+          pie.sw.s += dt / pie.sw.dur;
+          pie.sw.dest = dest;
+          moverPie(pie, dest, pie.sw.s, 2 * s);
+          if (pie.sw.s >= 1) { pie.x = dest; pie.y = G.GY - 1; pie.sw = null; }
+        } else if (Math.abs(pie.x - dest) > 1.5 * s && !e.pies[1 - k].sw) {
+          pie.sw = { desde: pie.x, s: 0, dur: 0.16, dest };
+        }
+      }
+    });
+  }
+
+  const E = G.esq = {
+    crear(o = {}) {
+      return Object.assign({ escala: 1, color: '#15131A', torso: 9, retraso: 0, oido: 0.6, dir: 1, pies: null, pFase: 0, marcha: false }, o);
+    },
+    // pose: { hipW, vx, hop, agache, incl, cab, mira, reposo:[a,b] (locales), atras:{x,y}, frente:{x,y}, color, dt }
+    dibujar(e, pose) {
+      const s = e.escala, dir = e.dir, col = pose.color || e.color;
+      const gr = Math.max(1, Math.round(s)), MU = 6 * s, PI = 6 * s, BR = 5 * s, AN = 5 * s;
+      const reposo = (pose.reposo || [-2, 3]).map((v) => v * s * dir);
+      actualizarPies(e, pose.hipW, pose.vx || 0, dir > 0 ? reposo : reposo.slice().reverse(), pose.dt || G.dt);
+      const bob = e.marcha ? (0.5 + 0.5 * Math.cos(4 * Math.PI * e.pFase)) * s : 0;
+      const hop = pose.hop || 0;
+      const hxW = pose.hipW, hx = hxW - G.camX;
+      const hy = G.GY - (MU + PI) + s + bob - hop + (pose.agache || 0) * s;
+      // Piernas (la de atrás primero)
+      for (const pie of e.pies) {
+        const fy = pie.y - Math.max(0, hop - 1.5 * s);
+        const r = miembro(hx, hy, pie.x - G.camX, fy, MU, PI, -dir, col, gr);
+        D.linea(r.ex, r.ey, r.ex + dir * gr, r.ey, col, gr);
+      }
+      // Torso y cabeza
+      const incl = (pose.incl || 0) * s, cab = pose.cab || 0, mira = pose.mira || 0;
+      const shx = hx + dir * incl, shy = hy - e.torso * s + cab * 0.8 * s;
+      D.linea(hx, hy, shx, shy, col, gr);
+      D.linea(hx + dir * gr, hy - gr, shx + dir * gr, shy + gr, col, gr);
+      const cx = Math.round(shx + dir * (incl * 0.3 - mira * s)), cy = Math.round(shy - 4 * s - mira * s + cab * 0.5 * s);
+      const filas = [3, 5, 5, 5, 3];
+      filas.forEach((w, i) => D.rect(cx - Math.floor(w * s / 2), cy + (i - 2) * s, w * s, s, col));
+      if (e.cuernos) { D.rect(cx - 3 * s, cy - 4 * s, s, 2 * s, e.cuernos); D.rect(cx + 2 * s, cy - 4 * s, s, 2 * s, e.cuernos); }
+      // Brazos: objetivos de mano en coordenadas locales respecto al hombro
+      const at = pose.atras || { x: -1, y: 8 }, fr = pose.frente || { x: 4, y: 5 };
+      const ra = miembro(shx, shy + s, shx + dir * at.x * s, shy + s + at.y * s, BR, AN, dir, col, gr);
+      const rf = miembro(shx, shy + s, shx + dir * fr.x * s, shy + s + fr.y * s, BR, AN, dir, col, gr);
+      return { hx, hy, shx, shy, cx, cy, mano: { x: rf.ex, y: rf.ey }, manoAtras: { x: ra.ex, y: ra.ey }, dir, s, col, gr };
+    },
+  };
+})(window.G);
+
+</script>
+<script>
+// ---- 21_tropa.js
+// 21_tropa.js — la tropa del jugador: tipos, formación, personalidad, respuesta a las órdenes y armas.
+(function (G) {
+  const U = G.u, D = G.d, BEAT = G.BEAT;
+  const NEGRO = '#15131A', METAL = '#C9CCD2', ROJO = '#B8322A', ORO = '#F2C14E', MADERA = '#5B4430';
+  const VEL = 30;
+  const TIPOS = {
+    bandera: { hp: 60, alcance: 0, dano: 0 },
+    lanza:   { hp: 40, alcance: 20, dano: 8 },
+    escudo:  { hp: 75, alcance: 13, dano: 5 },
+    arco:    { hp: 30, alcance: 165, dano: 6 },
+  };
+  // Formación (desplazamiento respecto al abanderado): escudos delante, arqueros detrás.
+  const FORMACION = [['escudo', 38], ['escudo', 29], ['lanza', 20], ['lanza', 11], ['bandera', 0], ['lanza', -9], ['arco', -19], ['arco', -29]];
+
+  const T = G.tropa = { unidades: [], ej: { x: 60, vel: 0, cargado: false } };
+
+  function thrust(p) {           // estocada: prepara, clava, sostiene, vuelve (desplazamiento de la mano)
+    if (p < 0.4) return -3 * U.easeOut(p / 0.4);
+    if (p < 0.55) return -3 + 11 * U.easeOut((p - 0.4) / 0.15);
+    if (p < 0.7) return 8;
+    return 8 - 8 * U.smooth((p - 0.7) / 0.3);
+  }
+  T.thrust = thrust;
+
+  T.reiniciar = (x = 60) => {
+    T.ej = { x, vel: 0, cargado: false };
+    T.unidades = FORMACION.map(([tipo, off], i) => {
+      const d = TIPOS[tipo];
+      return {
+        i, tipo, off, x: x + off, vx: 0, hp: d.hp, max: d.hp, vivo: true, bando: 'tropa', ancho: 6,
+        esq: G.esq.crear({ retraso: U.hash(i, 11) * 0.07, torso: 8 + Math.floor(U.hash(i, 12) * 3), oido: 0.4 + 0.6 * U.hash(i, 13) }),
+        brio: 0.75 + 0.5 * U.hash(i, 15), vagar: U.hash(i, 14) * 100, fase: U.hash(i, 3) * 6,
+        gesto: null, proxGesto: 1 + U.hash(i, 16) * 4, salto: 0, herido: 0, verVida: 0,
+        objetivo: null, ultGolpe: -1, defensa: false, pAnt: 0,
+      };
+    });
+  };
+  T.vivas = () => T.unidades.filter((u) => u.vivo);
+  T.frente = () => { let m = -1e9; for (const u of T.unidades) if (u.vivo) m = Math.max(m, u.x); return m; };
+  T.abanderado = () => T.unidades.find((u) => u.tipo === 'bandera');
+
+  // Multiplicador de daño recibido
+  function mult(u) {
+    const o = G.ritmo.ordenActiva();
+    let m = 1;
+    if (u.tipo === 'escudo') m *= 0.7;
+    if (o && o.orden === 'defender') m *= u.tipo === 'escudo' ? 0.1 : 0.35;
+    return m;
+  }
+  T.mult = mult;
+
+  G.on('orden', (o) => { if (o.orden === 'cargar') T.ej.cargado = true; });
+  G.on('fin_orden', (o) => { if (o.orden === 'atacar') T.ej.cargado = false; });
+  G.on('golpe', (g) => { if (g.juicio === 'perfecto' || g.juicio === 'bien') for (const u of T.unidades) u.salto = 0.22; });
+
+  function enemigoMasCercano(u, rango) {
+    let mejor = null, dm = 1e9;
+    for (const e of G.enem.lista) {
+      if (!e.vivo) continue;
+      const d = e.x - e.ancho / 2 - u.x;
+      if (d > -8 && d < rango && d < dm) { dm = d; mejor = e; }
+    }
+    return mejor;
+  }
+
+  T.actualizar = (dt) => {
+    const o = G.ritmo.ordenActiva(), ej = T.ej, niv = G.nivel;
+    // ---- Movimiento del ejército
+    let vel = 0;
+    if (o && o.orden === 'marchar') {
+      const bloqueo = G.enem.bloqueo();                     // primer enemigo/empalizada vivo delante
+      const frente = ej.x + 40;
+      vel = bloqueo === null || bloqueo - frente > 10 ? VEL : 0;
+      if (niv && ej.x > niv.datos.largo - 70) vel = 0;
+    } else if (o && o.orden === 'retroceder') {
+      vel = ej.x > 40 ? -26 : 0;
+    }
+    ej.vel = vel; ej.x += vel * dt;
+
+    const fiebre = G.ritmo.fiebre;
+    for (const u of T.unidades) {
+      if (!u.vivo) continue;
+      const tl = G.t - u.esq.retraso, pa = ((tl % BEAT) + BEAT) % BEAT / BEAT;
+      u.defensa = !!(o && o.orden === 'defender');
+      let meta = ej.x + u.off + Math.sin(G.t * 0.7 + u.vagar) * 1.2;
+      let vmax = 32, ff = vel;
+      u.objetivo = null;
+      if (o && o.orden === 'atacar' && u.tipo !== 'bandera') {
+        const d = TIPOS[u.tipo];
+        const e = enemigoMasCercano(u, u.tipo === 'arco' ? d.alcance : 130);
+        if (e) {
+          u.objetivo = e;
+          if (u.tipo !== 'arco') { meta = e.x - e.ancho / 2 - d.alcance + 3; vmax = 60; ff = 0; }
+        }
+        // El golpe cae a mitad del pulso (pico de la estocada / suelta de la flecha)
+        const suelta = u.tipo === 'arco' ? 0.35 : 0.5;
+        const b = Math.floor(tl / BEAT);
+        if (u.pAnt < suelta && pa >= suelta && b !== u.ultGolpe && G.t >= o.inicio) {
+          u.ultGolpe = b;
+          const pot = o.potencia * (fiebre ? 1.5 : 1) * (ej.cargado ? 2 : 1);
+          if (u.tipo === 'arco') {
+            if (e && (b - o.pulso0) % 2 === 0) G.combate.flecha(u.x + 6, G.GY - 22, e, 'tropa', d.dano * pot);
+          } else if (e && Math.abs(e.x - e.ancho / 2 - u.x) <= d.alcance + 3) {
+            G.combate.danar(e, d.dano * pot, u);
+          }
+        }
+      }
+      u.pAnt = pa;
+      // Velocidad con alimentación hacia delante (sigue a la formación sin retraso)
+      const err = meta - u.x;
+      let vx = ff + U.clamp(err * 3, -vmax, vmax);
+      if (Math.abs(err) < 0.6 && Math.abs(ff) < 0.1) vx = 0;
+      // No atravesar enemigos
+      const e = enemigoMasCercano(u, 12);
+      if (e && vx > 0 && e.x - e.ancho / 2 - u.x < 6) vx = 0;
+      u.vx = vx; u.x += vx * dt;
+      u.salto = Math.max(0, u.salto - dt); u.herido = Math.max(0, u.herido - dt); u.verVida = Math.max(0, u.verVida - dt);
+      // Gestos en reposo
+      u.proxGesto -= dt;
+      if (!u.gesto && u.proxGesto <= 0 && !o && Math.abs(vx) < 1) {
+        const tipos = ['peso', 'mirar', u.tipo === 'lanza' ? 'golpear' : 'peso'];
+        u.gesto = { tipo: tipos[Math.floor(U.hash(Math.floor(G.t * 10) + u.i * 31, 17) * 3)], a: 0, dur: 1.4 + U.hash(u.i, Math.floor(G.t)) * 0.8, lado: U.hash(u.i, Math.floor(G.t * 3)) < 0.5 ? -1 : 1 };
+        u.proxGesto = 2.5 + U.hash(u.i, Math.floor(G.t * 7)) * 4;
+      }
+      if (u.gesto) { u.gesto.a += dt; if (u.gesto.a >= u.gesto.dur || o) u.gesto = null; }
+    }
+  };
+
+  // ---- Dibujo
+  function dibujarUnidad(u, dt) {
+    const o = G.ritmo.ordenActiva(), ataca = o && o.orden === 'atacar' && u.tipo !== 'bandera';
+    const defiende = u.defensa, carga = o && o.orden === 'cargar';
+    const tl = G.t - u.esq.retraso, p = ((tl % BEAT) + BEAT) % BEAT / BEAT;
+    const ges = u.gesto ? Math.sin(Math.PI * Math.min(1, u.gesto.a / u.gesto.dur)) : 0, gt = u.gesto ? u.gesto.tipo : '';
+    const mel = G.audio.pulsoMelodia(tl), cab = mel.e * u.esq.oido * (ataca ? 0 : 1);
+    const hop = u.salto > 0 ? Math.sin(Math.PI * (1 - u.salto / 0.22)) * 3 * u.brio : 0;
+    const th = ataca ? thrust(p) * u.brio : 0, lunge = th / 8;
+    const respira = Math.sin(G.t * (2 + u.esq.oido) + u.fase) * 0.5 + 0.5;
+    const peso = gt === 'peso' ? ges * 1.5 * u.gesto.lado : 0;
+    const hipW = u.x + (u.tipo === 'arco' ? 0 : lunge * 2) + peso;
+    const agache = (defiende ? 2 : 0) + (carga ? 2 + Math.sin(G.t * 30) * 0.5 : 0) + (u.esq.marcha ? 0 : respira * 0.6);
+    const bal = Math.sin(2 * Math.PI * (u.esq.pFase || 0));
+    const vx = u.vx;
+    const pose = {
+      hipW, vx, hop, agache, incl: (u.esq.marcha ? 1 : 0) + lunge * 2 + (defiende ? 1 : 0) + cab * 0.6, cab, mira: gt === 'mirar' ? ges : 0,
+      reposo: ataca && u.tipo !== 'arco' ? [-4, 5] : defiende ? [-4, 4] : [-2, 3], dt,
+      atras: { x: -1 - (u.esq.marcha ? 3 * bal : 0) - cab * 1.5 * mel.alto, y: 8 - cab * 2 },
+      frente: { x: 4, y: 5 }, color: u.herido > 0 ? '#E8E4DA' : null,
+    };
+    let luz = null;
+    if (u.tipo === 'lanza') {
+      const golpea = gt === 'golpear' ? Math.max(0, Math.sin(Math.PI * 2 * u.gesto.a / BEAT)) * 2 : 0;
+      pose.frente = { x: 4 + th, y: 5 - (ataca ? 1 : 0) + golpea - (defiende ? 2 : 0) };
+      const r = G.esq.dibujar(u.esq, pose);
+      const ang = ataca ? 0 : defiende ? -Math.PI / 4 : -Math.PI / 2 - 0.15 * (u.esq.marcha ? 1 : 0);
+      const ux = Math.cos(ang) * r.dir, uy = Math.sin(ang), m = r.mano;
+      const atras = Math.min(7, G.GY - 1 - m.y);
+      D.linea(m.x - ux * atras, m.y - uy * atras, m.x + ux * 17, m.y + uy * 17, r.col);
+      D.linea(m.x + ux * 17, m.y + uy * 17, m.x + ux * 20, m.y + uy * 20, T.ej.cargado ? ORO : METAL);
+    } else if (u.tipo === 'escudo') {
+      pose.frente = { x: 4 + (ataca ? th * 0.6 : 0), y: defiende ? 1 : 4 };
+      pose.atras = { x: -3 + (ataca ? th * 0.4 : 0), y: 6 };
+      const r = G.esq.dibujar(u.esq, pose);
+      // espada corta en la mano de atrás
+      D.linea(r.manoAtras.x, r.manoAtras.y, r.manoAtras.x + r.dir * 3, r.manoAtras.y - 5, r.col);
+      D.rect(r.manoAtras.x + r.dir * 3, r.manoAtras.y - 7, 1, 2, METAL);
+      // escudo 4×10 delante del cuerpo
+      const sx0 = Math.round(r.mano.x + (r.dir > 0 ? 0 : -3)), sy0 = Math.round(r.mano.y - 5);
+      D.rect(sx0, sy0, 4, 10, r.col);
+      D.rect(sx0 + (r.dir > 0 ? 3 : 0), sy0 + 1, 1, 8, '#2E2A34');
+      D.rect(sx0 + 1, sy0 + 4, 2, 2, T.ej.cargado ? ORO : METAL);
+    } else if (u.tipo === 'arco') {
+      const tensa = ataca ? (p < 0.35 ? U.easeOut(p / 0.35) : Math.max(0, 1 - (p - 0.35) * 6)) : 0;
+      pose.frente = { x: 5, y: 2 };
+      pose.atras = { x: 2 - tensa * 4, y: 2 };
+      const r = G.esq.dibujar(u.esq, pose);
+      const m = r.mano, d = r.dir;
+      // arco: curva de 13 px hacia delante
+      for (let k = -6; k <= 6; k++) D.rect(m.x + d * Math.round(2.2 * (1 - (k * k) / 36)), m.y + k, 1, 1, MADERA);
+      const cx = tensa > 0.05 ? r.manoAtras.x : m.x;
+      D.linea(m.x, m.y - 6, cx, m.y, '#8A8F99'); D.linea(cx, m.y, m.x, m.y + 6, '#8A8F99');
+      if (tensa > 0.05) D.linea(cx, m.y, m.x + d * 5, m.y, r.col);
+    } else if (u.tipo === 'bandera') {
+      pose.frente = { x: 4, y: 4 - cab };
+      const r = G.esq.dibujar(u.esq, pose);
+      const bx = Math.round(r.mano.x), top = Math.round(r.mano.y) - 22;
+      D.linea(bx, Math.min(G.GY - 1, r.mano.y + 8), bx, top, r.col);
+      const viento = G.escena ? G.escena.viento : 0.5;
+      for (let i = 0; i < 9; i++) {
+        const ond = Math.round(Math.sin(G.t * (6 + 4 * viento) - i * 0.7) * (i / 9) * 1.5);
+        D.rect(bx + 1 + i, top + ond, 1, i < 7 ? 6 : 6 - (i - 6) * 2, ROJO);
+      }
+      D.disco(bx + 5, top + 3 + Math.round(Math.sin(G.t * 8 - 3) * 0.6), 1, ORO);
+      // farol en la punta: da luz de noche
+      D.rect(bx - 1, top - 4, 3, 3, '#FFD27A'); D.rect(bx, top - 5, 1, 1, r.col);
+      luz = { x: bx + G.camX, y: top - 3, tipo: 'farol' };
+    }
+    // Barra de vida al recibir daño
+    if (u.verVida > 0) {
+      const x0 = Math.round(u.x - G.camX - 4), y0 = G.GY - 34;
+      D.rect(x0, y0, 9, 2, '#2A0E0E'); D.rect(x0, y0, Math.max(1, Math.round(9 * u.hp / u.max)), 2, '#7FD06A');
+    }
+    return luz;
+  }
+  T.dibujar = (dt) => {
+    for (const u of T.unidades) if (u.vivo) { const l = dibujarUnidad(u, dt); if (l) G.luces.push(l); }
+  };
+})(window.G);
+
+</script>
+<script>
+// ---- 30_enemigos.js
+// 30_enemigos.js — enemigos con IA sencilla que actúan al pulso, empalizadas y el jefe gigante.
+(function (G) {
+  const U = G.u, D = G.d, BEAT = G.BEAT;
+  const PIEL = '#3A1616', HUESO = '#D8CBB0', METAL = '#B7B9BE', MADERA = '#6A4A30', MADERA2 = '#4A3220';
+  const TIPOS = {
+    bruto:      { hp: 36, dano: 7, alcance: 14, vel: 18, aggro: 190, ancho: 6, puntos: 100 },
+    lancero:    { hp: 26, dano: 9, alcance: 20, vel: 22, aggro: 200, ancho: 6, puntos: 120 },
+    arquero:    { hp: 20, dano: 5, alcance: 150, vel: 14, aggro: 210, ancho: 6, puntos: 120 },
+    empalizada: { hp: 70, dano: 0, alcance: 0, vel: 0, aggro: 0, ancho: 14, puntos: 80 },
+    jefe:       { hp: 450, dano: 18, alcance: 75, vel: 14, aggro: 400, ancho: 22, puntos: 2000 },
+  };
+  const E = G.enem = { lista: [], TIPOS };
+
+  E.reiniciar = (defs) => {
+    E.lista = defs.map((d, i) => {
+      const t = TIPOS[d.tipo];
+      const e = { i, tipo: d.tipo, x: d.x, x0: d.x, vx: 0, hp: t.hp, max: t.hp, vivo: true, bando: 'enem', ancho: t.ancho,
+        estado: 'espera', herido: 0, verVida: 0, ataque: null, cooldown: 0, anim: 0 };
+      if (d.tipo !== 'empalizada') {
+        e.esq = G.esq.crear({ dir: -1, color: PIEL, cuernos: HUESO, retraso: U.hash(i, 21) * 0.08, torso: 9 + Math.floor(U.hash(i, 22) * 2),
+          escala: d.tipo === 'jefe' ? 2.4 : 1, oido: 0.3 });
+      }
+      if (d.tipo === 'jefe') { e.patron = 0; e.pulsosEnFase = 0; }
+      return e;
+    });
+  };
+  // Posición del primer obstáculo vivo delante del ejército (para que la marcha se detenga)
+  E.bloqueo = () => {
+    let m = null;
+    for (const e of E.lista) if (e.vivo && (m === null || e.x - e.ancho / 2 < m)) m = e.x - e.ancho / 2;
+    return m;
+  };
+  E.jefe = () => E.lista.find((e) => e.tipo === 'jefe');
+  E.mult = (e) => 1;
+
+  function objetivo(e) {
+    let mejor = null, dm = 1e9;
+    for (const u of G.tropa.unidades) {
+      if (!u.vivo) continue;
+      const d = e.x - e.ancho / 2 - u.x;
+      if (d > -10 && d < dm) { dm = d; mejor = u; }
+    }
+    return mejor ? { u: mejor, d: dm } : null;
+  }
+
+  // ---- IA por pulso: cada enemigo decide en el golpe de tambor
+  G.on('pulso', (b) => {
+    if (G.estado !== 'juego') return;
+    for (const e of E.lista) {
+      if (!e.vivo || e.tipo === 'empalizada') continue;
+      const t = TIPOS[e.tipo], ob = objetivo(e);
+      if (e.tipo === 'jefe') { pulsoJefe(e, b, ob); continue; }
+      if (!ob) { e.estado = 'espera'; continue; }
+      const aggro = t.aggro + (G.nivel ? G.nivel.tiempo * 2.5 : 0);          // con el tiempo salen a buscarte
+      if (e.estado === 'espera' && ob.d < aggro) e.estado = 'avanza';
+      if (e.estado === 'avanza' && ob.d <= t.alcance + 2) e.estado = 'ataca';
+      if (e.estado === 'ataca' && ob.d > t.alcance + 8) e.estado = 'avanza';
+      if (e.estado === 'ataca') {
+        // Ataque en 2 pulsos: preparar (b) y golpear (b+1)
+        if (!e.ataque && e.cooldown <= 0) { e.ataque = { b0: b, obj: ob.u }; }
+        else if (e.ataque && b === e.ataque.b0 + 1) {
+          if (e.tipo === 'arquero') G.combate.flecha(e.x - 6, G.GY - 22, e.ataque.obj, 'enem', t.dano);
+          else if (Math.abs(e.x - e.ancho / 2 - e.ataque.obj.x) <= t.alcance + 4) G.combate.danar(e.ataque.obj, t.dano, e);
+          e.ataque = null; e.cooldown = e.tipo === 'arquero' ? 2 : 1;
+        }
+      }
+      if (e.cooldown > 0 && !e.ataque) e.cooldown--;
+      // Lancero: embestida si está a media distancia
+      if (e.tipo === 'lancero' && e.estado === 'avanza' && ob.d < 110 && ob.d > 30 && !e.carga) e.carga = 2;
+      else if (e.carga) e.carga--;
+    }
+  });
+
+  function pulsoJefe(e, b, ob) {
+    if (!ob) return;
+    if (e.estado === 'espera' && ob.d < TIPOS.jefe.aggro) { e.estado = 'activo'; G.emit('jefe_despierta'); }
+    if (e.estado !== 'activo') return;
+    const furia = e.hp < e.max * 0.5;
+    const PATRON = furia ? ['camina', 'golpe', 'pisoton', 'golpe', 'camina', 'pisoton'] : ['camina', 'golpe', 'camina', 'pisoton'];
+    const DUR = { camina: furia ? 2 : 3, golpe: 3, pisoton: 2 };
+    if (!e.fase) { e.fase = PATRON[e.patron % PATRON.length]; e.pulsosEnFase = 0; }
+    e.pulsosEnFase++;
+    if (e.fase === 'golpe') {
+      if (e.pulsosEnFase === 1) G.audio.sfx('aviso');
+      if (e.pulsosEnFase === DUR.golpe) {        // cae el garrote en el tercer pulso
+        G.audio.sfx('jefe'); G.temblor = 0.35;
+        for (const u of G.tropa.unidades) if (u.vivo && e.x - u.x < TIPOS.jefe.alcance && e.x - u.x > -20) G.combate.danar(u, TIPOS.jefe.dano, e);
+        G.combate.polvo(e.x - 55, 14);
+      }
+    } else if (e.fase === 'pisoton') {
+      if (e.pulsosEnFase === 1) G.audio.sfx('aviso');
+      if (e.pulsosEnFase === DUR.pisoton) { G.audio.sfx('jefe', 0.6); G.temblor = 0.2; G.combate.onda(e.x - 18, -110, 9, 'enem'); }
+    }
+    if (e.pulsosEnFase >= DUR[e.fase]) { e.patron++; e.fase = null; }
+  }
+
+  E.actualizar = (dt) => {
+    for (const e of E.lista) {
+      e.herido = Math.max(0, e.herido - dt); e.verVida = Math.max(0, e.verVida - dt);
+      if (!e.vivo || e.tipo === 'empalizada') continue;
+      const t = TIPOS[e.tipo], ob = objetivo(e);
+      let vx = 0;
+      if (ob && e.tipo !== 'jefe' && e.estado === 'avanza') vx = -(e.carga ? 55 : t.vel);
+      if (e.tipo === 'jefe' && e.estado === 'activo' && e.fase === 'camina' && ob && ob.d > 45) vx = -t.vel * (e.hp < e.max * 0.5 ? 1.5 : 1);
+      // No atravesar a la tropa ni a otros enemigos
+      if (ob && vx < 0 && ob.d + vx * dt < (e.tipo === 'jefe' ? 30 : 7)) vx = 0;
+      for (const o of E.lista) if (o !== e && o.vivo && o.x < e.x && e.x - o.x < (e.ancho + o.ancho) / 2 + 5 && vx < 0) vx = 0;
+      e.vx = vx; e.x += vx * dt;
+    }
+  };
+
+  // ---- Dibujo
+  function dibujarEmpalizada(e) {
+    const x = Math.round(e.x - G.camX), col = e.herido > 0 ? '#E8E4DA' : MADERA;
+    const alto = [22, 26, 20, 25, 21];
+    alto.forEach((h, k) => {
+      const hh = Math.round(h * (0.4 + 0.6 * e.hp / e.max));
+      D.rect(x - 7 + k * 3, G.GY - hh, 2, hh, col);
+      D.rect(x - 7 + k * 3, G.GY - hh - 1, 1, 1, col);
+      D.rect(x - 6 + k * 3, G.GY - hh + 2, 1, hh - 2, MADERA2);
+    });
+    D.rect(x - 8, G.GY - 15, 16, 2, MADERA2); D.rect(x - 8, G.GY - 7, 16, 2, MADERA2);
+  }
+  function dibujarEnemigo(e, dt) {
+    const t = TIPOS[e.tipo], jefe = e.tipo === 'jefe';
+    const p = ((G.t % BEAT) + BEAT) % BEAT / BEAT;
+    let prep = 0, golpe = 0;
+    if (e.ataque) prep = U.smooth(p);                                    // levanta el arma en el pulso de preparación
+    else if (e.cooldown > 0 && e.estado === 'ataca') golpe = Math.max(0, 1 - p * 3);
+    let alza = 0;
+    if (jefe && e.fase === 'golpe') alza = e.pulsosEnFase < 3 ? U.smooth((e.pulsosEnFase - 1 + p) / 2) : 0;
+    if (jefe && e.fase === 'pisoton' && e.pulsosEnFase < 2) alza = -U.smooth(p);
+    const pose = {
+      hipW: e.x, vx: e.vx, dt, hop: jefe && e.fase === 'pisoton' && e.pulsosEnFase < 2 ? U.smooth(p) * 3 : 0,
+      incl: 1 + golpe * 2 - prep, cab: 0, agache: 0, reposo: [-2, 3],
+      atras: { x: -1, y: 8 }, frente: { x: 4 + golpe * 6 - prep * 3, y: 5 - prep * 8 },
+      color: e.herido > 0 ? '#E8E4DA' : null,
+    };
+    if (jefe) { pose.frente = { x: 3 - alza * 6, y: 4 - alza * 13 }; pose.atras = { x: -2 - alza * 3, y: 6 - alza * 10 }; }
+    const r = G.esq.dibujar(e.esq, pose);
+    const m = r.mano, d = r.dir;
+    if (e.tipo === 'bruto') {
+      const ang = -Math.PI / 2 + (golpe * 1.6 - prep * 0.8) * 1;
+      const ex = m.x + Math.cos(ang) * d * 9, ey = m.y + Math.sin(ang) * 9;
+      D.linea(m.x, m.y, ex, ey, MADERA); D.disco(ex, ey, 2, MADERA2);
+    } else if (e.tipo === 'lancero') {
+      const ang = golpe > 0 ? 0 : -Math.PI / 2 + (e.carga ? Math.PI / 2 : 0.2);
+      const ux = Math.cos(ang) * d, uy = Math.sin(ang);
+      D.linea(m.x - ux * 6, m.y - uy * 6, m.x + ux * 15, m.y + uy * 15, r.col);
+      D.linea(m.x + ux * 15, m.y + uy * 15, m.x + ux * 18, m.y + uy * 18, METAL);
+    } else if (e.tipo === 'arquero') {
+      for (let k = -6; k <= 6; k++) D.rect(m.x + d * Math.round(2.2 * (1 - (k * k) / 36)), m.y + k, 1, 1, MADERA);
+      D.linea(m.x, m.y - 6, m.x - d * prep * 4, m.y, '#8A8F99'); D.linea(m.x - d * prep * 4, m.y, m.x, m.y + 6, '#8A8F99');
+    } else if (jefe) {
+      // garrote enorme
+      const ang = -Math.PI / 2 - alza * 0.9 * -1 + (e.fase === 'golpe' && e.pulsosEnFase >= 3 ? 1.5 : 0);
+      const L = 30, ex = m.x + Math.cos(ang) * d * L, ey = m.y + Math.sin(ang) * L;
+      D.linea(m.x, m.y, ex, ey, MADERA, 3); D.disco(ex, ey, 5, MADERA2);
+      D.rect(ex - 1, ey - 6, 2, 2, HUESO); D.rect(ex + 3, ey - 2, 2, 2, HUESO);
+      // aviso "!" sobre la cabeza durante la preparación
+      if ((e.fase === 'golpe' && e.pulsosEnFase < 3) || (e.fase === 'pisoton' && e.pulsosEnFase < 2)) {
+        if (Math.floor(G.t * 8) % 2 === 0) D.texto('!', r.cx, r.cy - 22, '#FF5A3A', 3, 'centro', '#2A0E0E');
+      }
+      // zona de impacto del garrote
+      if (e.fase === 'golpe' && e.pulsosEnFase === 2) {
+        G.ctx.globalAlpha = 0.25 + 0.2 * Math.sin(G.t * 20);
+        D.rect(e.x - TIPOS.jefe.alcance - G.camX, G.GY - 1, TIPOS.jefe.alcance - 10, 2, '#FF5A3A');
+        G.ctx.globalAlpha = 1;
+      }
+    }
+    if (!jefe && e.verVida > 0) {
+      const x0 = Math.round(e.x - G.camX - 4), y0 = G.GY - 34;
+      D.rect(x0, y0, 9, 2, '#1A0A0A'); D.rect(x0, y0, Math.max(1, Math.round(9 * e.hp / e.max)), 2, '#E0503A');
+    }
+  }
+  E.dibujar = (dt) => {
+    for (const e of E.lista) {
+      if (!e.vivo) continue;
+      if (e.x - G.camX < -60 || e.x - G.camX > G.W + 60) { if (e.esq) e.esq.pies = null; continue; }
+      if (e.tipo === 'empalizada') dibujarEmpalizada(e); else dibujarEnemigo(e, dt);
+    }
+  };
+})(window.G);
+
+</script>
+<script>
+// ---- 31_combate.js
+// 31_combate.js — daño, proyectiles (flechas en arco, ondas del jefe), partículas y textos flotantes.
+(function (G) {
+  const U = G.u, D = G.d, GRAV = 150;
+  const C = G.combate = { proy: [], part: [], textos: [] };
+  G.temblor = 0;
+
+  C.reiniciar = () => { C.proy = []; C.part = []; C.textos = []; G.temblor = 0; };
+
+  C.danar = (obj, cantidad, fuente) => {
+    if (!obj.vivo) return 0;
+    const m = obj.bando === 'tropa' ? G.tropa.mult(obj) : 1;
+    const d = Math.round(cantidad * m);
+    if (d <= 0) {
+      G.audio.sfx('escudo');
+      C.texto('BLOQ', obj.x - G.camX, G.GY - 36, '#C9CCD2');
+      return 0;
+    }
+    obj.hp -= d; obj.herido = 0.08; obj.verVida = 2.5;
+    C.texto(String(d), obj.x - G.camX, G.GY - 38, obj.bando === 'tropa' ? '#FF8A6A' : '#FFF1C2');
+    G.audio.sfx(m < 0.5 ? 'escudo' : 'golpe', 0.8);
+    for (let k = 0; k < 5; k++) C.part.push({ x: obj.x, y: G.GY - 16, vx: (Math.random() - 0.5) * 60, vy: -30 - Math.random() * 40, vida: 0.4, col: '#E8E4DA' });
+    if (obj.hp <= 0) morir(obj);
+    return d;
+  };
+  function morir(obj) {
+    obj.vivo = false; obj.hp = 0;
+    G.audio.sfx('muerte');
+    // se deshace en píxeles del color del cuerpo
+    const col = obj.bando === 'tropa' ? '#15131A' : obj.tipo === 'empalizada' ? '#6A4A30' : '#3A1616';
+    const alto = obj.tipo === 'jefe' ? 70 : 28, n = obj.tipo === 'jefe' ? 90 : 26;
+    for (let k = 0; k < n; k++) {
+      C.part.push({ x: obj.x + (Math.random() - 0.5) * (obj.tipo === 'jefe' ? 30 : 8), y: G.GY - Math.random() * alto,
+        vx: (Math.random() - 0.5) * 40, vy: -20 - Math.random() * 50, vida: 0.8 + Math.random() * 0.8, col, suelo: true });
+    }
+    G.emit('muere', obj);
+  }
+  C.texto = (s, x, y, col) => C.textos.push({ s, x, y, col, vida: 0.8 });
+  C.polvo = (x, n) => { for (let k = 0; k < n; k++) C.part.push({ x: x + (Math.random() - 0.5) * 40, y: G.GY - 1, vx: (Math.random() - 0.5) * 50, vy: -10 - Math.random() * 30, vida: 0.6, col: '#8A7A60' }); };
+
+  // Flecha balística que apunta a donde estará el objetivo (tiempo de vuelo fijo 0.7 s)
+  C.flecha = (x, y, obj, bando, dano) => {
+    const T = 0.7, tx = obj.x + (obj.vx || 0) * T, ty = G.GY - 14;
+    C.proy.push({ tipo: 'flecha', x, y, vx: (tx - x) / T, vy: (ty - y) / T - 0.5 * GRAV * T, bando, dano, vivo: true, clavada: 0 });
+    G.audio.sfx('flecha');
+  };
+  C.onda = (x, vx, dano, bando) => C.proy.push({ tipo: 'onda', x, vx, dano, bando, vivo: true, vida: 2.2, tocados: new Set() });
+
+  C.actualizar = (dt) => {
+    G.temblor = Math.max(0, G.temblor - dt);
+    for (const p of C.proy) {
+      if (!p.vivo) continue;
+      if (p.tipo === 'flecha') {
+        if (p.clavada > 0) { p.clavada -= dt; if (p.clavada <= 0) p.vivo = false; continue; }
+        p.vy += GRAV * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+        const blancos = p.bando === 'tropa' ? G.enem.lista : G.tropa.unidades;
+        for (const b of blancos) {
+          if (!b.vivo) continue;
+          const alto = b.tipo === 'jefe' ? 70 : b.tipo === 'empalizada' ? 26 : 30;
+          if (Math.abs(p.x - b.x) < b.ancho / 2 + 2 && p.y > G.GY - alto && p.y < G.GY) { C.danar(b, p.dano, p); p.vivo = false; break; }
+        }
+        if (p.vivo && p.y >= G.GY - 1) { p.y = G.GY - 1; p.clavada = 1.2; }
+      } else if (p.tipo === 'onda') {
+        p.x += p.vx * dt; p.vida -= dt;
+        if (p.vida <= 0) p.vivo = false;
+        for (const u of G.tropa.unidades) {
+          if (u.vivo && !p.tocados.has(u) && Math.abs(u.x - p.x) < 6) {
+            p.tocados.add(u);
+            if (u.salto > 0.05) C.texto('ESQUIVA', u.x - G.camX, G.GY - 36, '#C9CCD2');   // saltar la esquiva
+            else C.danar(u, p.dano, p);
+          }
+        }
+        if (Math.random() < 0.6) C.part.push({ x: p.x, y: G.GY - 1, vx: -p.vx * 0.1 + (Math.random() - 0.5) * 20, vy: -20 - Math.random() * 30, vida: 0.4, col: '#8A7A60' });
+      }
+    }
+    C.proy = C.proy.filter((p) => p.vivo);
+    for (const q of C.part) {
+      q.vida -= dt; q.vy += GRAV * dt; q.x += q.vx * dt; q.y += q.vy * dt;
+      if (q.y > G.GY - 1) { q.y = G.GY - 1; q.vx *= 0.5; q.vy = 0; }
+    }
+    C.part = C.part.filter((q) => q.vida > 0);
+    for (const s of C.textos) { s.vida -= dt; s.y -= 16 * dt; }
+    C.textos = C.textos.filter((s) => s.vida > 0);
+  };
+
+  C.dibujar = () => {
+    for (const p of C.proy) {
+      if (p.tipo === 'flecha') {
+        const x = p.x - G.camX, ang = p.clavada > 0 ? 0.6 * Math.sign(p.vx) : Math.atan2(p.vy, p.vx);
+        const ux = Math.cos(ang), uy = Math.sin(ang);
+        D.linea(x - ux * 6, p.y - uy * 6, x, p.y, p.bando === 'tropa' ? '#2A2520' : '#3A1616');
+        D.rect(x, p.y, 1, 1, '#C9CCD2');
+      } else {
+        const x = Math.round(p.x - G.camX);
+        D.rect(x - 3, G.GY - 3, 7, 3, '#8A7A60'); D.rect(x - 1, G.GY - 5, 3, 2, '#A89878');
+      }
+    }
+    for (const q of C.part) { G.ctx.globalAlpha = U.clamp(q.vida * 2, 0, 1); D.rect(q.x - G.camX, q.y, 1, 1, q.col); }
+    G.ctx.globalAlpha = 1;
+  };
+  C.dibujarTextos = () => {
+    for (const s of C.textos) { G.ctx.globalAlpha = U.clamp(s.vida * 2.5, 0, 1); D.texto(s.s, s.x, s.y, s.col, 1, 'centro', '#15131A'); }
+    G.ctx.globalAlpha = 1;
+  };
+})(window.G);
+
+</script>
+<script>
+// ---- 40_escena.js
+// 40_escena.js — cielo, parallax, suelo, hogueras, meta, clima, oscuridad con halos y el agua reutilizada.
+(function (G) {
+  const U = G.u, D = G.d, W = G.W, H = G.H, WY = G.WY, GY = G.GY, ctx = G.ctx;
+  const FASES = {
+    dia:   { cielo: '#6FA3C9', hor: '#E8D7A8', mont: '#8FA7B8', arb: '#5D7A6A', mat: '#4E6B45', astro: '#FFF1C2', osc: 0, mul: '#FFFFFF' },
+    tarde: { cielo: '#4F5E92', hor: '#F2A462', mont: '#8A6A7A', arb: '#5E4A52', mat: '#4C3E3A', astro: '#FFC27A', osc: 0.55, mul: '#F6D2B4' },
+    noche: { cielo: '#23335E', hor: '#50608E', mont: '#2A3656', arb: '#1F2A38', mat: '#1A241E', astro: '#EEF2FF', osc: 1, mul: '#5A6894' },
+  };
+  const VIENTO = { despejado: 0.4, niebla: 0.2, lluvia: 0.8, tormenta: 1 };
+  const S = G.escena = { fase: 'dia', clima: 'despejado', viento: 0.4, fogatas: [], meta: null, largo: 1400, relampago: 0, proxRayo: 8 };
+  const agua = crearAgua({ ancho: W, alto: H, yAgua: WY });
+  const capa = G.lienzo(W, H);
+  const gotas = Array.from({ length: 140 }, (_, i) => ({ x: U.hash(i, 41) * (W + 60), y: U.hash(i, 42) * H, v: 260 + U.hash(i, 43) * 120 }));
+  let ondas = [];
+
+  function halo(w, h, col) {
+    const { c, x } = G.lienzo(w, h); x.fillStyle = col;
+    for (let k = 0; k < 5; k++) {
+      const f = 1 - k / 5, ax = w / 2 * f - 1, ay = h / 2 * f - 1; x.globalAlpha = k ? 0.24 : 0.12;
+      for (let yy = -Math.floor(ay); yy <= Math.floor(ay); yy++) { const hw = Math.floor(ax * Math.sqrt(1 - yy * yy / (ay * ay))); x.fillRect(Math.round(w / 2 - hw), Math.round(h / 2 + yy), hw * 2, 1); }
+    }
+    return c;
+  }
+  const HALOS = { fogata: { c: halo(220, 120, '#FFB070'), n: 12, nc: '#FFD8A8', tam: 'grande' }, farol: { c: halo(110, 62, '#FFC48A'), n: 4, nc: '#FFE0B0', tam: 'chica' } };
+
+  S.configurar = (d) => {
+    S.fase = d.fase || 'dia'; S.clima = d.clima || 'despejado'; S.viento = VIENTO[S.clima];
+    S.fogatas = d.fogatas || []; S.meta = d.meta || null; S.largo = d.largo || 1400; S.relampago = 0; S.proxRayo = 5;
+  };
+  const F = () => FASES[S.fase];
+
+  // ---- Fondo
+  function cielo() {
+    const f = F();
+    for (let y = 0; y < WY; y++) { ctx.fillStyle = U.mix(f.cielo, f.hor, Math.pow(y / WY, 1.4)); ctx.fillRect(0, y, W, 1); }
+    if (S.fase === 'noche') for (let i = 0; i < 70; i++) { ctx.globalAlpha = 0.5 + 0.5 * Math.sin(G.t * 2 + i); D.rect(Math.floor(U.hash(i, 1) * W), Math.floor(U.hash(i, 2) * 110), 1, 1, '#E8EEFF'); }
+    ctx.globalAlpha = 1;
+    if (S.clima === 'despejado' || S.clima === 'niebla') {
+      const ax = S.fase === 'tarde' ? 390 : 380, ay = S.fase === 'tarde' ? 118 : 46;
+      ctx.globalAlpha = 0.25; D.disco(ax, ay, 13, f.astro); ctx.globalAlpha = 1; D.disco(ax, ay, 9, f.astro);
+    } else {
+      // nubes bajas de tormenta
+      for (let k = 0; k < 7; k++) { const x = ((k * 90 - G.camX * 0.05 - G.t * 4) % 560 + 560) % 560 - 60; ctx.globalAlpha = 0.5; D.disco(x, 30 + (k % 3) * 12, 22 + (k % 2) * 8, U.shade(f.cielo, 0.8)); }
+      ctx.globalAlpha = 1;
+    }
+    if (S.relampago > 0) { ctx.globalAlpha = S.relampago * 2.5; D.rect(0, 0, W, WY, '#E8ECFF'); ctx.globalAlpha = 1; }
+  }
+  function sierra(f, y0, alto, paso, col, seed) {
+    ctx.fillStyle = col;
+    const cam = G.camX * f, off = ((cam % paso) + paso) % paso, base = Math.floor(cam / paso);
+    for (let x = 0; x < W; x++) {
+      const wx = x + off, i = Math.floor(wx / paso), u = (wx % paso) / paso;
+      const h = Math.round(U.lerp(U.hash(i + base, seed), U.hash(i + base + 1, seed), u * u * (3 - 2 * u)) * alto);
+      ctx.fillRect(x, y0 - h, 1, WY - (y0 - h));
+    }
+  }
+  function arboles(f, y0, col, seed, sep) {
+    const cam = G.camX * f;
+    for (let k = -1; k < W / sep + 2; k++) {
+      const i = k + Math.floor(cam / sep), x = Math.round(i * sep - cam + U.hash(i, seed) * sep * 0.6);
+      const h = 26 + Math.floor(U.hash(i, seed + 1) * 22);
+      D.rect(x, y0 - h, 3, h, col);
+      D.disco(x + 1, y0 - h, 8 + Math.floor(U.hash(i, seed + 2) * 5), col);
+    }
+  }
+  function suelo() {
+    const cam = G.camX;
+    D.rect(0, GY, W, WY - GY, '#5A3E26');
+    const o8 = ((cam % 8) + 8) % 8;
+    for (let x = -8; x < W + 8; x += 8) { const i = Math.floor((x + cam) / 8); D.rect(x - o8, GY + 5 + Math.floor(U.hash(i, 7) * 7), 4, 2, '#46301D'); }
+    D.rect(0, GY, W, 2, '#6E8A3C');
+    for (let x = 0; x < W; x++) {
+      const i = Math.floor(x + cam);
+      if (U.hash(i, 9) < 0.35) {
+        const h = 1 + Math.floor(U.hash(i, 10) * 3 * (0.6 + 0.4 * Math.sin(G.t * 3 * S.viento + i * 0.3)));
+        D.rect(x, GY - h, 1, h + 1, '#6E8A3C');
+      }
+    }
+    // piedras y postes
+    for (let k = -1; k < W / 90 + 2; k++) {
+      const i = k + Math.floor(cam / 90), x = Math.round(i * 90 + U.hash(i, 4) * 50 - cam);
+      if (U.hash(i, 5) < 0.5) D.disco(x, GY - 2, 3, '#7B7D78'); else if (U.hash(i, 6) < 0.4) D.rect(x, GY - 14, 2, 14, '#5B4430');
+    }
+  }
+  function fogata(xw) {
+    const x = Math.round(xw - G.camX);
+    if (x < -20 || x > W + 20) return;
+    D.rect(x - 5, GY - 3, 11, 3, '#3A2A1E'); D.rect(x - 4, GY - 4, 2, 1, '#5B4430'); D.rect(x + 2, GY - 4, 2, 1, '#5B4430');
+    const f = Math.floor(G.t * 10 + xw) % 3;
+    D.rect(x - 3, GY - 9 - f, 7, 6 + f, '#E8742A'); D.rect(x - 2, GY - 11 - (f === 1 ? 1 : 0), 5, 5, '#F2A33A'); D.rect(x - 1, GY - 9, 3, 4, '#FFE39A');
+    if (U.hash(Math.floor(G.t * 12), xw) < 0.5) D.rect(x - 2 + Math.floor(U.hash(Math.floor(G.t * 12), xw + 1) * 5), GY - 14 - Math.floor((G.t * 20) % 6), 1, 1, '#FFB060');
+    G.luces.push({ x: xw, y: GY - 7, tipo: 'fogata' });
+  }
+  function meta() {
+    if (S.meta === null) return;
+    const x = Math.round(S.meta - G.camX);
+    if (x < -40 || x > W + 40) return;
+    D.rect(x, GY - 58, 2, 58, '#4A3A2A'); D.rect(x - 1, GY - 60, 4, 2, '#F2C14E');
+    for (let i = 0; i < 16; i++) { const ond = Math.round(Math.sin(G.t * 5 - i * 0.5) * (i / 16) * 2); D.rect(x + 2 + i, GY - 56 + ond, 1, 12, i % 8 < 4 ? '#F4F1E6' : '#E4DCC8'); }
+    D.disco(x + 10, GY - 50 + Math.round(Math.sin(G.t * 5 - 4) * 1), 2, '#F2C14E');
+    D.rect(x - 8, GY - 4, 18, 4, '#7B7D78');
+    G.luces.push({ x: S.meta + 1, y: GY - 60, tipo: 'farol' });
+  }
+
+  S.dibujarFondo = () => {
+    const f = F();
+    cielo();
+    sierra(0.1, 130, 40, 60, f.mont, 1);
+    arboles(0.3, 168, f.arb, 20, 26);
+    sierra(0.5, 172, 10, 30, f.mat, 2);
+    suelo();
+    meta();
+    for (const x of S.fogatas) fogata(x);
+  };
+
+  // ---- Oscuridad (multiply) con halos; luna y estrellas perforadas para que no se apaguen
+  S.oscuridad = () => {
+    const f = F();
+    if (f.osc <= 0 && S.clima !== 'tormenta') return;
+    const c = capa.x, mul = S.clima === 'tormenta' && S.fase !== 'noche' ? '#9AA2B8' : f.mul;
+    c.globalCompositeOperation = 'source-over'; c.globalAlpha = 1; c.fillStyle = mul; c.fillRect(0, 0, W, H);
+    c.globalCompositeOperation = 'screen';
+    for (const L of G.luces) {
+      const h = HALOS[L.tipo]; if (!h) continue;
+      const x = L.x - G.camX, hw = h.c.width, hh = h.c.height;
+      if (x + hw / 2 < 0 || x - hw / 2 > W) continue;
+      c.globalAlpha = f.osc * (0.85 + 0.15 * Math.sin(G.t * 17 + L.x));
+      const x0 = Math.round(x - hw / 2), y0 = Math.round(L.y - hh / 2), corte = Math.max(0, 100 - y0);
+      if (corte < hh) c.drawImage(h.c, 0, corte, hw, hh - corte, x0, y0 + corte, hw, hh - corte);
+      D.disco(x, L.y, h.n, h.nc, c);
+    }
+    if (S.fase === 'noche' && S.clima !== 'tormenta' && S.clima !== 'lluvia') {
+      c.globalCompositeOperation = 'source-over'; c.globalAlpha = 1;
+      D.disco(380, 46, 9, '#FFFFFF', c);
+      c.fillStyle = '#FFFFFF';
+      for (let i = 0; i < 70; i++) c.fillRect(Math.floor(U.hash(i, 1) * W), Math.floor(U.hash(i, 2) * 110), 1, 1);
+    }
+    if (S.relampago > 0) { c.globalCompositeOperation = 'source-over'; c.globalAlpha = Math.min(1, S.relampago * 4); c.fillStyle = '#FFFFFF'; c.fillRect(0, 0, W, H); }
+    c.globalAlpha = 1; c.globalCompositeOperation = 'source-over';
+    ctx.globalCompositeOperation = 'multiply'; ctx.drawImage(capa.c, 0, 0); ctx.globalCompositeOperation = 'source-over';
+  };
+
+  // ---- Niebla baja (antes del agua, así también se refleja)
+  S.niebla = () => {
+    if (S.clima !== 'niebla') return;
+    const col = S.fase === 'noche' ? '#8A94B0' : '#D8D4C8';
+    for (let k = 0; k < 3; k++) {
+      ctx.globalAlpha = 0.16 + k * 0.05;
+      const off = ((G.t * (6 + k * 4) + G.camX * (0.6 + k * 0.3)) % 64 + 64) % 64;
+      for (let x = -64; x < W + 64; x += 8) {
+        const i = Math.floor((x + off + k * 1000) / 8), h = 6 + Math.floor(U.noise1(i * 0.3 + G.t * 0.2, k) * 10);
+        D.rect(x - off, GY - 4 - h - k * 6, 8, h + 6, col);
+      }
+    }
+    ctx.globalAlpha = 1;
+  };
+
+  S.agua = () => {
+    const f = F();
+    const luces = [];
+    for (const L of G.luces) { const h = HALOS[L.tipo]; if (h) luces.push({ x: L.x - G.camX, y: L.y, tam: h.tam, fuerza: 1 }); }
+    agua.dibujar(ctx, { t: G.t, camX: G.camX, viento: S.viento, oscuridad: f.osc, colorNoche: '#141A2E', luces });
+  };
+
+  // ---- Lluvia (después del agua: gotas en el aire y ondas en la superficie)
+  S.lluvia = (dt) => {
+    if (S.clima !== 'lluvia' && S.clima !== 'tormenta') return;
+    const inc = S.clima === 'tormenta' ? 0.35 : 0.2;
+    ctx.fillStyle = S.fase === 'noche' ? '#6E7FA0' : '#A8B8D0';
+    ctx.globalAlpha = 0.55;
+    for (const g of gotas) {
+      g.y += g.v * dt; g.x -= g.v * inc * dt;
+      if (g.y > H) { g.y -= H + 10; g.x = Math.random() * (W + 60); }
+      if (g.x < -10) g.x += W + 60;
+      const x = Math.round(g.x), y = Math.round(g.y);
+      ctx.fillRect(x, y, 1, 3); ctx.fillRect(x - 1, y + 3, 1, 1);
+      if (y > WY + 2 && Math.random() < 0.02) ondas.push({ x, y, v: 0 });
+    }
+    if (Math.random() < (S.clima === 'tormenta' ? 0.9 : 0.5)) ondas.push({ x: Math.random() * W, y: WY + 3 + Math.random() * 74, v: 0 });
+    ctx.globalAlpha = 0.5;
+    for (const o of ondas) { o.v += dt; const r = 1 + Math.floor(o.v * 10); ctx.fillRect(Math.round(o.x - r), Math.round(o.y), 1, 1); ctx.fillRect(Math.round(o.x + r), Math.round(o.y), 1, 1); }
+    ondas = ondas.filter((o) => o.v < 0.35);
+    ctx.globalAlpha = 1;
+  };
+
+  S.actualizar = (dt) => {
+    S.relampago = Math.max(0, S.relampago - dt);
+    if (S.clima === 'tormenta') {
+      S.proxRayo -= dt;
+      if (S.proxRayo <= 0) { S.relampago = 0.18; S.proxRayo = 6 + Math.random() * 7; G.audio.sfx('jefe', 0.5); }
+    }
+  };
+})(window.G);
+
+</script>
+<script>
+// ---- 50_niveles.js
+// 50_niveles.js — datos de los niveles y su desarrollo: inicio, puntuación, victoria y derrota.
+(function (G) {
+  const e = (tipo, x) => ({ tipo, x });
+  const NIVELES = [
+    { nombre: 'El vado', sub: 'Aprende a marchar y atacar', fase: 'dia', clima: 'despejado', largo: 1400, meta: 1340, tema: 1,
+      enemigos: [e('bruto', 520), e('bruto', 565), e('empalizada', 800), e('bruto', 1010), e('lancero', 1060)], fogatas: [] },
+    { nombre: 'Bosque de niebla', sub: 'Cuidado con los arqueros', fase: 'tarde', clima: 'niebla', largo: 1800, meta: 1740, tema: 2,
+      enemigos: [e('arquero', 460), e('bruto', 500), e('lancero', 720), e('empalizada', 920), e('arquero', 955), e('bruto', 1160),
+        e('bruto', 1200), e('lancero', 1420), e('arquero', 1470)], fogatas: [380, 1090] },
+    { nombre: 'Noche en el río', sub: 'Defiende cuando apunten', fase: 'noche', clima: 'lluvia', largo: 2000, meta: 1940, tema: 3,
+      enemigos: [e('bruto', 420), e('arquero', 470), e('lancero', 700), e('lancero', 745), e('empalizada', 960), e('arquero', 995),
+        e('arquero', 1030), e('bruto', 1260), e('bruto', 1300), e('lancero', 1520), e('arquero', 1570), e('bruto', 1610)],
+      fogatas: [150, 620, 1150, 1720] },
+    { nombre: 'El gigante del río', sub: 'Salta su onda y defiende su garrote', fase: 'noche', clima: 'tormenta', largo: 900, meta: null, tema: 4, jefe: true,
+      enemigos: [e('jefe', 620)], fogatas: [120, 460, 820] },
+  ];
+
+  const N = G.nivel = null;
+  G.NIVELES = NIVELES;
+
+  G.iniciarNivel = (idx) => {
+    const d = NIVELES[idx];
+    G.nivel = { idx, datos: d, puntos: 0, bajas: 0, tiempo: 0, fin: null, maxCombo: 0 };
+    G.escena.configurar(d);
+    G.tropa.reiniciar(60);
+    G.enem.reiniciar(d.enemigos);
+    G.combate.reiniciar();
+    G.ritmo.reiniciar();
+    G.audio.tema(d.tema);
+    G.camX = 0;
+  };
+
+  G.on('muere', (o) => {
+    const n = G.nivel; if (!n || n.fin) return;
+    if (o.bando === 'enem') { n.puntos += G.enem.TIPOS[o.tipo].puntos; n.bajas++; }
+  });
+  G.on('golpe', (g) => { const n = G.nivel; if (n && !n.fin && g.juicio === 'perfecto') n.puntos += 10; });
+  G.on('orden', () => { const n = G.nivel; if (n && !n.fin) { n.puntos += 20 * G.ritmo.combo; n.maxCombo = Math.max(n.maxCombo, G.ritmo.combo); } });
+
+  G.actualizarNivel = (dt) => {
+    const n = G.nivel; if (!n || n.fin) return;
+    n.tiempo += dt;
+    const ab = G.tropa.abanderado();
+    if (!ab.vivo || G.tropa.vivas().length === 0) { n.fin = 'derrota'; G.emit('fin_nivel', n); return; }
+    const d = n.datos;
+    const gana = d.jefe ? !G.enem.jefe().vivo : G.tropa.ej.x + 40 >= d.meta;
+    if (gana) {
+      n.puntos += G.tropa.vivas().length * 150 + Math.max(0, 600 - Math.floor(n.tiempo) * 3);
+      n.fin = 'victoria'; G.emit('fin_nivel', n);
+    }
+  };
+
+  // Cámara: sigue al ejército con el abanderado a un tercio de la pantalla
+  G.actualizarCamara = (dt) => {
+    const n = G.nivel; if (!n) return;
+    let objetivo = G.tropa.ej.x - 150;
+    const j = n.datos.jefe && G.enem.jefe();
+    if (j && j.vivo && j.estado === 'activo') objetivo = Math.min(objetivo + 60, j.x - 380);
+    objetivo = G.u.clamp(objetivo, 0, n.datos.largo - G.W);
+    G.camX += (objetivo - G.camX) * Math.min(1, dt * 4);
+  };
+})(window.G);
+
+</script>
+<script>
+// ---- 60_ui.js
+// 60_ui.js — pantallas (título, mapa, juego, pausa, calibración, victoria, derrota, créditos) y marcador.
+(function (G) {
+  const U = G.u, D = G.d, W = G.W, H = G.H, ctx = G.ctx, BEAT = G.BEAT;
+  const COL = { PATA: '#E0503A', PON: '#4A8FE0', CHAKA: '#F2C14E', DON: '#6ACB6A' };
+  const NOMBRE_ORDEN = { marchar: '¡MARCHAR!', atacar: '¡ATACAR!', defender: '¡DEFENDER!', retroceder: '¡RETROCEDER!', cargar: '¡CARGAR!' };
+  const UI = G.ui = { sel: 0, menu: 0, juicios: [], avisoCombo: 0, finT: 0, calib: null, volverA: 'mapa', creditosY: 0, tInicio: 0 };
+
+  // ---- Utilidades de dibujo de interfaz
+  function panel(x, y, w, h, a = 0.7) { ctx.globalAlpha = a; D.rect(x, y, w, h, '#0D0F16'); ctx.globalAlpha = 1; D.rect(x, y, w, 1, '#3A4058'); D.rect(x, y + h - 1, w, 1, '#3A4058'); }
+  function parpadeo(v = 2) { return Math.floor(performance.now() / 1000 * v) % 2 === 0; }
+  function icono(tipo, x, y, a = 1) {
+    ctx.globalAlpha = a; const c = COL[tipo];
+    if (tipo === 'PATA') D.disco(x, y, 4, c);
+    else if (tipo === 'PON') { D.disco(x, y, 4, c); D.disco(x, y, 2, '#0D0F16'); }
+    else if (tipo === 'CHAKA') { for (let i = 0; i < 5; i++) D.rect(x - i, y - 3 + i * 2, i * 2 + 1, 2, c); }
+    else D.rect(x - 4, y - 4, 9, 9, c);
+    ctx.globalAlpha = 1;
+  }
+  function libroOrdenes(x, y) {
+    panel(x, y, 150, 50, 0.6);
+    let yy = y + 4;
+    for (const [clave, orden] of Object.entries(G.ritmo.ORDENES)) {
+      D.texto(orden, x + 4, yy, '#F4F1E6');
+      clave.split(' ').forEach((t, i) => D.texto(t === 'CHAKA' ? 'CHK' : t, x + 58 + i * 23, yy, COL[t]));
+      yy += 9;
+    }
+  }
+  function menuLista(opciones, x, y, sel) {
+    opciones.forEach((o, i) => {
+      const on = i === sel;
+      D.texto((on ? '> ' : '  ') + o, x, y + i * 12, on ? '#FFF1C2' : '#9AA0B4', 1, 'izq', '#0D0F16');
+    });
+  }
+
+  // ---- Eventos
+  G.on('golpe', (g) => {
+    const t = { perfecto: ['PERFECTO', '#FFF1C2'], bien: ['BIEN', '#C8D0E0'], fallo: ['FALLO', '#E0503A'], espera: ['¡ESCUCHA!', '#9AA0B4'] }[g.juicio];
+    UI.juicios.push({ s: t[0], col: t[1], tipo: g.tipo, v: 0 });
+  });
+  G.on('combo_roto', (m) => { UI.avisoCombo = 1.2; UI.motivo = m; });
+  G.on('fin_nivel', (n) => { UI.finT = 1.6; G.audio.sfx(n.fin === 'victoria' ? 'victoria' : 'derrota'); if (n.fin === 'victoria') G.prog.superar(n.idx + 1, n.puntos); });
+
+  // ---- Fondo de título: la tropa descansando junto al río al atardecer
+  function prepararTitulo() {
+    G.escena.configurar({ fase: 'tarde', clima: 'despejado', largo: 3000, fogatas: [330], meta: null });
+    G.tropa.reiniciar(250); G.enem.reiniciar([]); G.combate.reiniciar(); G.ritmo.reiniciar();
+    G.camX = 90; G.audio.tema(0); G.nivel = null;
+  }
+  UI.prepararTitulo = prepararTitulo;
+
+  G.on('estado', ({ ahora, datos }) => {
+    if (ahora === 'titulo' || ahora === 'mapa') { if (!G.nivel || ahora === 'titulo' || datos === 'reset') prepararTitulo(); G.audio.tema(0); G.audio.fiebre(false); G.audio.metronomo(false); }
+    if (ahora === 'mapa') UI.sel = Math.min(G.prog.datos.desbloqueado, G.NIVELES.length) - 1;
+    if (ahora === 'juego' && datos === 'nuevo') UI.tInicio = G.t;
+    UI.menu = 0;
+  });
+
+  G.on('tecla', (k) => {
+    const est = G.estado;
+    if (est === 'titulo') { if (k === 'ok' || k === 'pausa') { G.audio.sfx('ok'); G.cambiarEstado('mapa'); } return; }
+    if (est === 'mapa') {
+      const max = Math.min(G.prog.datos.desbloqueado, G.NIVELES.length) - 1;
+      if (k === 'izq') { UI.sel = Math.max(0, UI.sel - 1); G.audio.sfx('menu'); }
+      if (k === 'der') { UI.sel = Math.min(max, UI.sel + 1); G.audio.sfx('menu'); }
+      if (k === 'ok') { G.audio.sfx('ok'); G.iniciarNivel(UI.sel); G.cambiarEstado('juego', 'nuevo'); }
+      if (k === 'arriba' || k === 'abajo') { UI.volverA = 'mapa'; G.cambiarEstado('ajustes'); }
+      if (k === 'atras') G.cambiarEstado('titulo');
+      return;
+    }
+    if (est === 'juego') { if (k === 'pausa' && !G.nivel.fin) { G.audio.pausar(true); G.cambiarEstado('pausa'); } return; }
+    if (est === 'pausa' || est === 'ajustes') {
+      const ops = est === 'pausa' ? ['continuar', 'calibrar', 'musica', 'mapa'] : ['calibrar', 'musica', 'volver'];
+      if (k === 'arriba') { UI.menu = (UI.menu + ops.length - 1) % ops.length; G.audio.sfx('menu'); }
+      if (k === 'abajo') { UI.menu = (UI.menu + 1) % ops.length; G.audio.sfx('menu'); }
+      const volver = () => { if (est === 'pausa') { G.audio.pausar(false); G.cambiarEstado('juego'); } else G.cambiarEstado('mapa'); };
+      if (k === 'atras' || k === 'pausa') volver();
+      if (k === 'ok') {
+        const o = ops[UI.menu];
+        if (o === 'continuar' || o === 'volver') volver();
+        if (o === 'musica') { G.prog.datos.musica = !G.prog.datos.musica; G.audio.musica(G.prog.datos.musica); G.prog.guardar(); }
+        if (o === 'calibrar') {
+          UI.volverA = est; if (est === 'pausa') G.audio.pausar(false);
+          UI.calib = { errores: [], ult: -1 }; G.audio.metronomo(true); G.audio.musica(false); G.cambiarEstado('calibrar');
+        }
+        if (o === 'mapa') { G.audio.pausar(false); G.cambiarEstado('mapa', 'reset'); }
+      }
+      return;
+    }
+    if (est === 'calibrar') {
+      if (k === 'atras' || (k === 'ok' && UI.calib.errores.length >= 8)) terminarCalibracion();
+      return;
+    }
+    if (est === 'victoria') {
+      if (k === 'ok') { if (G.nivel.idx === G.NIVELES.length - 1) { UI.creditosY = H; G.cambiarEstado('creditos'); } else G.cambiarEstado('mapa', 'reset'); }
+      return;
+    }
+    if (est === 'derrota') {
+      if (k === 'arriba' || k === 'abajo' || k === 'izq' || k === 'der') { UI.menu = 1 - UI.menu; G.audio.sfx('menu'); }
+      if (k === 'ok') { if (UI.menu === 0) { G.iniciarNivel(G.nivel.idx); G.cambiarEstado('juego', 'nuevo'); } else G.cambiarEstado('mapa', 'reset'); }
+      return;
+    }
+    if (est === 'creditos' && (k === 'ok' || k === 'atras')) G.cambiarEstado('mapa', 'reset');
+  });
+  G.on('tambor', (t) => {
+    if (G.estado === 'juego' && G.nivel && !G.nivel.fin) G.ritmo.golpe(t);
+    else if (G.estado === 'calibrar') {
+      G.audio.tambor(t);
+      const c = UI.calib, b = Math.round(G.t / BEAT);
+      if (b === c.ult) return;
+      c.ult = b; c.errores.push(G.t - b * BEAT);
+      if (c.errores.length >= 8) {
+        const s = c.errores.slice().sort((a, b2) => a - b2);
+        c.resultado = Math.round(s[4] * 1000);
+      }
+    }
+  });
+  function terminarCalibracion() {
+    const c = UI.calib;
+    if (c && c.resultado !== undefined) { G.prog.datos.latencia = U.clamp(c.resultado, -150, 250); G.prog.guardar(); }
+    G.audio.metronomo(false); G.audio.musica(G.prog.datos.musica);
+    if (UI.volverA === 'pausa') { G.audio.pausar(true); G.cambiarEstado('pausa'); } else G.cambiarEstado('ajustes');
+  }
+
+  // ---- Marcador durante el juego
+  function hud(dt) {
+    const R = G.ritmo, n = G.nivel;
+    const p = ((G.t - R.latencia()) % BEAT + BEAT) % BEAT / BEAT, pulso = Math.max(0, 1 - p * 3);
+    // marco del ritmo
+    ctx.globalAlpha = 0.35 * pulso * (R.fiebre ? 1.6 : 1);
+    const cMarco = R.fiebre ? ['#FF6A4A', '#FFD04A', '#6ADA6A', '#4AB0FF'][Math.floor(G.t / BEAT) % 4] : '#FFFFFF';
+    D.rect(0, 0, W, 2, cMarco); D.rect(0, H - 2, W, 2, cMarco); D.rect(0, 0, 2, H, cMarco); D.rect(W - 2, 0, 2, H, cMarco);
+    ctx.globalAlpha = 1;
+    // 4 casillas de golpes
+    const x0 = W / 2 - 50;
+    for (let i = 0; i < 4; i++) {
+      const x = x0 + i * 26;
+      panel(x, 5, 22, 16, 0.5);
+      const s = R.sec[i];
+      if (s) icono(s.tipo, x + 11, 13);
+    }
+    // orden en curso
+    const o = R.ordenActiva();
+    if (o) {
+      const k = Math.floor((G.t - o.inicio) / BEAT);
+      D.texto(NOMBRE_ORDEN[o.orden], W / 2, 28, R.fiebre ? cMarco : '#FFF1C2', 2, 'centro', '#15131A');
+      for (let i = 0; i < 4; i++) D.rect(W / 2 - 14 + i * 8, 42, 5, 2, i <= k ? '#FFF1C2' : '#4A4F66');
+    }
+    // juicios
+    for (const j of UI.juicios) {
+      j.v += dt; ctx.globalAlpha = U.clamp(1.5 - j.v * 2.5, 0, 1);
+      D.texto(j.s, W / 2 + 56, 10 - Math.round(j.v * 6), j.col, 1, 'izq', '#15131A');
+    }
+    ctx.globalAlpha = 1;
+    UI.juicios = UI.juicios.filter((j) => j.v < 0.6).slice(-1);
+    // combo / fiebre
+    if (R.combo > 0) D.texto('COMBO ' + R.combo, 8, 8, '#FFF1C2', 1, 'izq', '#15131A');
+    if (R.fiebre) D.texto('¡FIEBRE!', 8, 16, cMarco, 2, 'izq', '#15131A');
+    if (UI.avisoCombo > 0) { UI.avisoCombo -= dt; if (parpadeo(6)) D.texto('COMBO PERDIDO: ' + UI.motivo, 8, R.fiebre ? 30 : 18, '#E0503A', 1, 'izq', '#15131A'); }
+    // puntos y abanderado
+    D.texto(String(n.puntos).padStart(6, '0'), W - 8, 8, '#FFF1C2', 1, 'der', '#15131A');
+    const ab = G.tropa.abanderado();
+    D.texto('BANDERA', W - 8, 15, '#C8D0E0', 1, 'der', '#15131A');
+    D.rect(W - 48, 23, 40, 3, '#2A0E0E'); D.rect(W - 48, 23, Math.round(40 * ab.hp / ab.max), 3, '#7FD06A');
+    // jefe
+    const j = G.enem.jefe && G.enem.jefe();
+    if (j && j.estado === 'activo' && j.vivo) {
+      D.texto('EL GIGANTE DEL RIO', W / 2, 52, '#E0503A', 1, 'centro', '#15131A');
+      D.rect(W / 2 - 80, 59, 160, 4, '#2A0E0E'); D.rect(W / 2 - 80, 59, Math.round(160 * j.hp / j.max), 4, '#E0503A');
+    }
+    // presentación del nivel y ayuda del primer nivel
+    const edad = G.t - UI.tInicio;
+    if (edad < 3.5) {
+      ctx.globalAlpha = U.clamp(3.5 - edad, 0, 1);
+      D.texto(n.datos.nombre, W / 2, 80, '#FFF1C2', 3, 'centro', '#15131A');
+      D.texto(n.datos.sub, W / 2, 102, '#C8D0E0', 1, 'centro', '#15131A');
+      ctx.globalAlpha = 1;
+    }
+    if (n.idx === 0 && !n.fin) libroOrdenes(6, 44);
+    if (!G.entrada.tactil) D.texto('P: PAUSA', W - 6, H - 9, '#6A7088', 1, 'der');
+    // botones táctiles
+    G.entrada.zonas = [];
+    if (G.entrada.tactil) {
+      ['PATA', 'CHAKA', 'DON', 'PON'].forEach((t, i) => {
+        const x = 6 + i * 118, y = H - 30;
+        ctx.globalAlpha = 0.35; D.rect(x, y, 110, 26, '#0D0F16'); ctx.globalAlpha = 0.9;
+        icono(t, x + 16, y + 13); D.texto(t, x + 30, y + 10, COL[t]); ctx.globalAlpha = 1;
+        G.entrada.zonas.push({ x, y, w: 110, h: 26, tambor: t });
+      });
+      G.entrada.zonas.push({ x: W - 40, y: 0, w: 40, h: 30, tecla: 'pausa' });
+      D.texto('II', W - 14, 34, '#9AA0B4', 1, 'der');
+    }
+  }
+
+  // ---- Pantallas
+  function titulo() {
+    ctx.globalAlpha = 0.45; D.rect(0, 30, W, 64, '#0D0F16'); ctx.globalAlpha = 1;
+    D.texto('TAMBORES', W / 2, 38, '#FFF1C2', 4, 'centro', '#2A1A12');
+    D.texto('JUNTO AL RIO', W / 2, 64, '#F2C14E', 3, 'centro', '#2A1A12');
+    if (parpadeo(1.5)) D.texto(G.entrada.tactil ? 'TOCA PARA EMPEZAR' : 'PULSA UNA TECLA', W / 2, 108, '#FFFFFF', 1, 'centro', '#15131A');
+    D.texto('A PATA   D PON   W CHAKA   S DON', W / 2, 122, '#C8D0E0', 1, 'centro', '#15131A');
+  }
+  function mapa() {
+    for (let y = 0; y < H; y++) { ctx.fillStyle = U.mix('#1B2238', '#2C2A38', y / H); ctx.fillRect(0, y, W, 1); }
+    D.texto('ELIGE TU CAMINO', W / 2, 14, '#FFF1C2', 2, 'centro', '#0D0F16');
+    const pts = [[70, 150], [180, 110], [300, 150], [410, 100]];
+    // río serpenteante
+    for (let x = 0; x < W; x++) { const y = 175 + Math.round(Math.sin(x * 0.03) * 10 + Math.sin(x * 0.011 + 1) * 8); D.rect(x, y, 1, 6, '#3E5A7A'); if ((x + Math.floor(G.t * 20)) % 23 === 0) D.rect(x, y + 2, 3, 1, '#7FA0C0'); }
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
+      for (let k = 0; k <= 20; k += 2) D.rect(U.lerp(ax, bx, k / 20), U.lerp(ay, by, k / 20), 2, 2, i + 1 < G.prog.datos.desbloqueado ? '#C8B080' : '#4A4F66');
+    }
+    pts.forEach(([x, y], i) => {
+      const abierto = i < G.prog.datos.desbloqueado, hecho = G.prog.datos.records[i + 1] !== undefined, sel = i === UI.sel;
+      D.disco(x, y, 9, abierto ? '#C8B080' : '#3A3F55');
+      D.disco(x, y, 7, abierto ? (i === 3 ? '#6A2020' : '#2E4A30') : '#23263A');
+      D.texto(i === 3 ? '!' : String(i + 1), x + 1, y - 2, abierto ? '#FFF1C2' : '#5A5F75', 1, 'centro');
+      if (hecho) { D.rect(x + 7, y - 20, 1, 12, '#15131A'); D.rect(x + 8, y - 20, 6, 4, '#B8322A'); }
+      if (sel && parpadeo(3)) { D.rect(x - 12, y + 12, 24, 1, '#FFF1C2'); D.rect(x - 1, y + 13, 3, 2, '#FFF1C2'); }
+    });
+    const d = G.NIVELES[UI.sel];
+    panel(40, 206, 400, 50, 0.7);
+    D.texto(d.nombre, 52, 214, '#FFF1C2', 2, 'izq');
+    D.texto(d.sub, 52, 230, '#C8D0E0');
+    const rec = G.prog.datos.records[UI.sel + 1];
+    D.texto(rec !== undefined ? 'RECORD ' + rec : 'SIN SUPERAR', 428, 214, '#F2C14E', 1, 'der');
+    D.texto(G.entrada.tactil ? 'TOCA PARA JUGAR' : 'A/D ELEGIR · ENTER JUGAR · W AJUSTES', 52, 244, '#9AA0B4');
+    G.entrada.zonas = [];
+    pts.forEach(([x, y], i) => { if (i < G.prog.datos.desbloqueado) G.entrada.zonas.push({ x: x - 14, y: y - 14, w: 28, h: 28, accion: () => { if (UI.sel === i) { G.iniciarNivel(i); G.cambiarEstado('juego', 'nuevo'); } else UI.sel = i; } }); });
+    G.entrada.zonas.push({ x: 0, y: 0, w: 80, h: 30, accion: () => { UI.volverA = 'mapa'; G.cambiarEstado('ajustes'); } });
+    D.texto('AJUSTES', 8, 8, '#9AA0B4');
+  }
+  function pausa(titulo, ops) {
+    ctx.globalAlpha = 0.6; D.rect(0, 0, W, H, '#0D0F16'); ctx.globalAlpha = 1;
+    D.texto(titulo, W / 2, 30, '#FFF1C2', 3, 'centro');
+    menuLista(ops, 170, 70, UI.menu);
+    libroOrdenes(W / 2 - 75, 140);
+    D.texto('LATENCIA: ' + G.prog.datos.latencia + ' MS', W / 2, 200, '#9AA0B4', 1, 'centro');
+    G.entrada.zonas = ops.map((_, i) => ({ x: 160, y: 66 + i * 12, w: 160, h: 12, accion: () => { UI.menu = i; G.emit('tecla', 'ok'); } }));
+  }
+  function calibrar() {
+    for (let y = 0; y < H; y++) { ctx.fillStyle = U.mix('#1B2238', '#0D0F16', y / H); ctx.fillRect(0, y, W, 1); }
+    const c = UI.calib, p = (G.t % BEAT) / BEAT;
+    D.texto('CALIBRAR RITMO', W / 2, 30, '#FFF1C2', 2, 'centro');
+    D.texto('TOCA CUALQUIER TAMBOR JUSTO CON CADA CLIC', W / 2, 60, '#C8D0E0', 1, 'centro');
+    D.disco(W / 2, 110, Math.round(10 + 10 * Math.max(0, 1 - p * 4)), '#F2C14E');
+    D.texto(c.errores.length + ' / 8', W / 2, 140, '#FFF1C2', 2, 'centro');
+    if (c.resultado !== undefined) {
+      D.texto('RESULTADO: ' + c.resultado + ' MS', W / 2, 170, '#6ACB6A', 1, 'centro');
+      D.texto('ENTER PARA GUARDAR', W / 2, 184, '#9AA0B4', 1, 'centro');
+    } else D.texto('ESC PARA SALIR', W / 2, 184, '#9AA0B4', 1, 'centro');
+    G.entrada.zonas = [{ x: 0, y: 0, w: W, h: H - 40, tambor: 'DON' }, { x: 0, y: H - 40, w: W, h: 40, tecla: c.resultado !== undefined ? 'ok' : 'atras' }];
+  }
+  function fin(victoria) {
+    const n = G.nivel;
+    ctx.globalAlpha = 0.72; D.rect(0, 40, W, 150, '#0D0F16'); ctx.globalAlpha = 1;
+    D.texto(victoria ? '¡VICTORIA!' : 'DERROTA', W / 2, 54, victoria ? '#F2C14E' : '#E0503A', 4, 'centro', '#15131A');
+    const filas = [['PUNTOS', n.puntos], ['ENEMIGOS VENCIDOS', n.bajas], ['COMBO MAXIMO', n.maxCombo], ['GOLPES PERFECTOS', G.ritmo.perfectos], ['TIEMPO', Math.floor(n.tiempo) + ' S']];
+    filas.forEach(([k, v], i) => { D.texto(k, W / 2 - 90, 92 + i * 11, '#C8D0E0'); D.texto(String(v), W / 2 + 90, 92 + i * 11, '#FFF1C2', 1, 'der'); });
+    if (victoria) { if (parpadeo(1.5)) D.texto('PULSA PARA CONTINUAR', W / 2, 160, '#FFFFFF', 1, 'centro'); G.entrada.zonas = []; }
+    else {
+      menuLista(['REINTENTAR', 'VOLVER AL MAPA'], 180, 152, UI.menu);
+      G.entrada.zonas = [0, 1].map((i) => ({ x: 170, y: 148 + i * 12, w: 160, h: 12, accion: () => { UI.menu = i; G.emit('tecla', 'ok'); } }));
+    }
+  }
+  function creditos(dt) {
+    ctx.globalAlpha = 0.7; D.rect(0, 0, W, H, '#0D0F16'); ctx.globalAlpha = 1;
+    UI.creditosY -= 18 * dt;
+    const lineas = ['¡EL GIGANTE HA CAIDO!', '', 'EL RIO VUELVE A ESTAR EN PAZ', '', '', 'TAMBORES JUNTO AL RIO', '', 'IDEA Y DIRECCION', 'EDUARDO', '', 'PROGRAMACION Y ARTE', 'CLAUDE', '', 'AGUA PIXEL ART', 'INSPIRADA EN KINGDOM TWO CROWNS', '', 'RITMO', 'INSPIRADO EN PATAPON', '', '', 'GRACIAS POR JUGAR'];
+    lineas.forEach((l, i) => { const y = UI.creditosY + i * 14; if (y > -10 && y < H) D.texto(l, W / 2, y, i === 0 || i === 5 ? '#F2C14E' : '#F4F1E6', i === 0 || i === 5 ? 2 : 1, 'centro'); });
+    if (UI.creditosY < -lineas.length * 14) UI.creditosY = H;
+  }
+
+  UI.dibujar = (dt) => {
+    const e = G.estado;
+    if (e === 'titulo') { titulo(); G.entrada.zonas = []; }
+    else if (e === 'mapa') mapa();
+    else if (e === 'juego') hud(dt);
+    else if (e === 'pausa') pausa('PAUSA', ['CONTINUAR', 'CALIBRAR RITMO', 'MUSICA: ' + (G.prog.datos.musica ? 'SI' : 'NO'), 'SALIR AL MAPA']);
+    else if (e === 'ajustes') { mapa(); pausa('AJUSTES', ['CALIBRAR RITMO', 'MUSICA: ' + (G.prog.datos.musica ? 'SI' : 'NO'), 'VOLVER']); }
+    else if (e === 'calibrar') calibrar();
+    else if (e === 'victoria') fin(true);
+    else if (e === 'derrota') fin(false);
+    else if (e === 'creditos') creditos(dt);
+  };
+  // Tras la victoria/derrota se espera un poco antes de mostrar la pantalla final
+  UI.actualizar = (dt) => {
+    if (G.estado === 'juego' && G.nivel && G.nivel.fin) {
+      UI.finT -= dt;
+      if (UI.finT <= 0) { UI.menu = 0; G.cambiarEstado(G.nivel.fin); }
+    }
+  };
+})(window.G);
+
+</script>
+<script>
+// ---- 99_principal.js
+// 99_principal.js — bucle, escalado entero, orden de actualización/dibujo y modos de prueba por URL.
+(function (G) {
+  const U = G.u, W = G.W, H = G.H, BEAT = G.BEAT, P = G.P;
+  const pantalla = document.getElementById('pantalla'), pctx = pantalla.getContext('2d');
+  G.pantalla = pantalla;
+  let escala = 1;
+  function ajustar() {
+    escala = Math.max(1, Math.floor(Math.min(innerWidth / W, innerHeight / H)));
+    if (innerWidth / W < 1 || innerHeight / H < 1) escala = Math.min(innerWidth / W, innerHeight / H);
+    pantalla.width = Math.round(W * escala); pantalla.height = Math.round(H * escala);
+    pantalla.style.left = Math.round((innerWidth - pantalla.width) / 2) + 'px';
+    pantalla.style.top = Math.round((innerHeight - pantalla.height) / 2) + 'px';
+    pctx.imageSmoothingEnabled = false;
+  }
+  addEventListener('resize', ajustar); ajustar();
+  G.audio.musica(G.prog.datos.musica);
+
+  const mundoVisible = () => ['juego', 'pausa', 'victoria', 'derrota', 'titulo'].includes(G.estado);
+
+  function actualizar(dt) {
+    G.dt = dt;
+    G.entrada.actualizar();
+    G.audio.actualizar();
+    G.ui.actualizar(dt);
+    if (G.estado === 'juego' || G.estado === 'victoria' || G.estado === 'derrota') {
+      G.ritmo.actualizar();
+      G.escena.actualizar(dt);
+      G.tropa.actualizar(dt);
+      G.enem.actualizar(dt);
+      G.combate.actualizar(dt);
+      G.actualizarNivel(dt);
+      G.actualizarCamara(dt);
+    } else if (G.estado === 'titulo') {
+      G.escena.actualizar(dt); G.tropa.actualizar(dt);
+    }
+  }
+  function dibujar(dt) {
+    G.luces = [];
+    if (mundoVisible()) {
+      G.escena.dibujarFondo();
+      G.enem.dibujar(dt);
+      G.tropa.dibujar(dt);
+      G.combate.dibujar();
+      G.escena.oscuridad();
+      G.escena.niebla();
+      G.escena.agua();
+      G.escena.lluvia(G.estado === 'pausa' ? 0 : dt);
+      G.combate.dibujarTextos();
+    }
+    G.ui.dibujar(dt);
+  }
+  function presentar() {
+    let dx = 0, dy = 0;
+    if (G.temblor > 0) { dx = Math.round((Math.random() - 0.5) * 4 * escala); dy = Math.round((Math.random() - 0.5) * 3 * escala); }
+    pctx.fillStyle = '#0D0F16'; pctx.fillRect(0, 0, pantalla.width, pantalla.height);
+    pctx.drawImage(G.buf, dx, dy, pantalla.width, pantalla.height);
+  }
+  G.paso = (dt) => { if (G.estado !== 'pausa') G.t += dt; actualizar(dt); dibujar(dt); };
+
+  // ---- Jugador automático (pruebas): elige la orden y toca en el pulso (bien) o con errores grandes (mal)
+  function crearBot(modo, seed = 7) {
+    const rnd = U.rng(seed), cola = [];
+    return (t) => {
+      const R = G.ritmo, b = Math.floor(t / BEAT + 0.5);
+      if (!cola.length) {
+        const ocupado = R.ejec && b < R.ejec.pulso0 + 3;
+        if (ocupado) return;
+        const inicio = R.ejec ? R.ejec.pulso0 + 4 : Math.floor(t / BEAT) + 1;
+        const frente = G.tropa.frente(), j = G.enem.jefe && G.enem.jefe();
+        let cerca = false;
+        for (const e of G.enem.lista) if (e.vivo && e.x - frente < 125) cerca = true;
+        let orden = cerca ? 'atacar' : 'marchar';
+        if (j && j.vivo && j.estado === 'activo' && (j.fase === 'golpe' || j.fase === 'pisoton')) orden = 'defender';
+        if (cerca && !G.tropa.ej.cargado && R.combo % 4 === 3) orden = 'cargar';
+        const clave = Object.keys(R.ORDENES).find((k) => R.ORDENES[k] === orden);
+        clave.split(' ').forEach((tipo, i) => {
+          const err = modo === 'mal' ? (rnd() - 0.5) * 0.45 : 0;
+          cola.push({ tipo, t: (inicio + i) * BEAT + err });
+        });
+      }
+      while (cola.length && t >= cola[0].t) { const g = cola.shift(); R.golpe(g.tipo, t); }
+    };
+  }
+
+  function salida(texto) { const pre = document.createElement('pre'); pre.id = 'out'; pre.textContent = texto; document.body.appendChild(pre); }
+
+  function simularNivel(idx, modo, maxS, alPaso) {
+    G.iniciarNivel(idx); G.cambiarEstado('juego', 'nuevo');
+    const bot = modo ? crearBot(modo) : null;
+    for (let i = 0; i < maxS * 60; i++) {
+      if (bot && G.estado === 'juego' && !G.nivel.fin) bot(G.t);
+      G.paso(1 / 60);
+      if (alPaso) alPaso();
+      if (G.nivel.fin && G.estado !== 'juego') break;
+    }
+    return G.nivel;
+  }
+
+  // ---- Modos de prueba
+  if (P.get('prueba') === 'pies') {
+    // Mide cuánto se mueve un pie apoyado entre fotogramas (debe ser 0) en los niveles 1 y 4.
+    let deriva = 0, pasos = 0, peor = '';
+    const prev = new Map();
+    const medir = () => {
+      const ents = [...G.tropa.unidades, ...G.enem.lista].filter((e) => e.vivo && e.esq && e.esq.pies);
+      for (const e of ents) e.esq.pies.forEach((pie, k) => {
+        const key = e.bando + e.i + ':' + k, a = prev.get(key);
+        if (a && a.arr === e.esq.pies && !pie.sw && !a.sw) { const d = Math.abs(pie.x - a.x); if (d > deriva) { deriva = d; peor = key; } }
+        if (pie.sw && !(a && a.sw)) pasos++;
+        prev.set(key, { x: pie.x, sw: !!pie.sw, arr: e.esq.pies });
+      });
+    };
+    simularNivel(0, 'bien', 60, medir);
+    simularNivel(3, 'bien', 40, medir);
+    salida(`deriva máxima de un pie apoyado: ${deriva.toFixed(4)} px (${peor || '-'}) · pasos: ${pasos}`);
+    return;
+  }
+  if (P.get('prueba') === 'ritmo') {
+    const R = G.ritmo, res = [];
+    G.iniciarNivel(0); G.cambiarEstado('juego', 'nuevo');
+    const casos = [[0, 'perfecto'], [0.05, 'perfecto'], [-0.05, 'perfecto'], [0.1, 'bien'], [-0.11, 'bien'], [0.16, 'fallo'], [-0.2, 'fallo']];
+    let ok = 0;
+    casos.forEach(([err, esperado], i) => { R.sec = []; R.ejec = null; const j = R.golpe('PATA', (40 + i * 4) * BEAT + err).juicio; res.push(`${err >= 0 ? '+' : ''}${err * 1000} ms → ${j}${j === esperado ? '' : ' (esperado ' + esperado + ')'}`); if (j === esperado) ok++; });
+    // secuencia completa → orden
+    R.reiniciar(); let orden = null; G.on('orden', (o) => { orden = o.orden; });
+    ['PATA', 'PATA', 'PATA', 'PON'].forEach((t, i) => R.golpe(t, (100 + i) * BEAT + 0.01));
+    res.push('PATA PATA PATA PON → ' + orden);
+    // tocar durante la orden rompe el combo y responde "espera"
+    const j = R.golpe('PON', 101.5 * BEAT + 0.5 * BEAT).juicio;
+    res.push('golpe durante la orden → ' + j);
+    salida(`ritmo: ${ok}/${casos.length} juicios correctos · ${orden === 'marchar' && j === 'espera' ? 'órdenes OK' : 'órdenes MAL'}\n` + res.join('\n'));
+    return;
+  }
+  if (P.has('auto')) {
+    const idx = (+P.get('nivel') || 1) - 1, modo = P.get('auto') === 'mal' ? 'mal' : 'bien';
+    const n = simularNivel(idx, modo, 400);
+    const vivos = G.tropa.vivas().length;
+    salida(`nivel ${idx + 1} (${n.datos.nombre}) · bot ${modo}: ${n.fin || 'sin terminar'} en ${n.tiempo.toFixed(1)} s · puntos ${n.puntos} · bajas enemigas ${n.bajas} · tropa viva ${vivos}/8 · combo máx ${n.maxCombo}${G.enem.jefe() ? ' · vida del jefe ' + G.enem.jefe().hp : ''}`);
+    return;
+  }
+  if (P.has('bench')) {
+    const n = +P.get('bench') || 300;
+    G.iniciarNivel(2); G.cambiarEstado('juego', 'nuevo');
+    const bot = crearBot('bien');
+    for (let i = 0; i < 600; i++) { bot(G.t); G.paso(1 / 60); }
+    const t0 = performance.now();
+    for (let i = 0; i < n; i++) { bot(G.t); G.paso(1 / 60); }
+    salida(`BENCH ${n} frames: ${((performance.now() - t0) / n).toFixed(3)} ms/frame (nivel 3, lluvia, noche)`);
+    return;
+  }
+  if (P.has('shot')) {
+    const pant = P.get('pantalla') || 'juego', sim = +P.get('sim') || 3, idx = (+P.get('nivel') || 1) - 1;
+    if (pant === 'titulo') { G.cambiarEstado('titulo'); for (let i = 0; i < sim * 60; i++) G.paso(1 / 60); }
+    else if (pant === 'mapa') { G.prog.datos.desbloqueado = +P.get('abiertos') || 3; G.prog.datos.records = { 1: 3120, 2: 2890 }; G.cambiarEstado('mapa'); for (let i = 0; i < 30; i++) G.paso(1 / 60); }
+    else {
+      simularNivel(idx, P.get('bot') || 'bien', sim);
+      if (pant === 'pausa') G.cambiarEstado('pausa');
+      if (pant === 'victoria' || pant === 'derrota') { G.nivel.fin = pant; G.cambiarEstado(pant); }
+      G.paso(1 / 60);
+    }
+    if (P.has('tactil')) { G.entrada.tactil = true; G.paso(1 / 60); }
+    salida(G.buf.toDataURL());
+    return;
+  }
+
+  // ---- Bucle real (si la pestaña se oculta durante un nivel, se pausa para no perder el ritmo)
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && G.estado === 'juego' && G.nivel && !G.nivel.fin) { G.audio.pausar(true); G.cambiarEstado('pausa'); }
+  });
+  G.cambiarEstado('titulo');
+  let ultimo = performance.now();
+  requestAnimationFrame(function cuadro(ahora) {
+    let dt = Math.min(0.05, (ahora - ultimo) / 1000); ultimo = ahora;
+    const r = G.audio.reloj();
+    if (r !== null && G.estado !== 'pausa') { dt = U.clamp(r - G.t, 0, 0.05); G.t = r; } else if (G.estado !== 'pausa') G.t += dt;
+    actualizar(dt); dibujar(dt); presentar();
+    requestAnimationFrame(cuadro);
+  });
+})(window.G);
+
+</script>
+</body>
+</html>
