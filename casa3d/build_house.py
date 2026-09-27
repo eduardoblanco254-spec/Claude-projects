@@ -693,6 +693,23 @@ for x, z, pw in [(5, 2.9, 60), (8.4, 2.6, 60), (10.3, 2.6, 60), (5.6, 1.0, 50), 
 ld = bpy.data.lights.new('LED azul', 'AREA'); ld.size = 1; ld.energy = 15; ld.color = (.35, .4, 1)
 lo = bpy.data.objects.new('LED azul', ld); link(lo); lo.location = (5.575, -8.2, 2.9)
 
+# ================================================================ ESCALA SEGÚN FOTOS
+# Las fotos (puertas de ~0,9 × 2,1 m como regla) muestran espacios ~35 % más amplios que el plano
+# y techos de ~3,4 m. La estructura se estira; los muebles solo se reubican, sin cambiar de tamaño.
+S, SZ = float(os.environ.get('ESCALA', 1.35)), float(os.environ.get('ESCALA_ALTO', 1.12))
+for name, coll in COL.items():
+    for ob in list(coll.objects):
+        if ob.parent: continue
+        if ob.type == 'MESH' and ob.location.length < 1e-6 and name in ('Mobiliario', 'Camaras'):
+            n = len(ob.data.vertices); cx = sum(v.co.x for v in ob.data.vertices) / n; cy = sum(v.co.y for v in ob.data.vertices) / n
+            for v in ob.data.vertices: v.co.x += cx * (S - 1); v.co.y += cy * (S - 1)
+            continue
+        ob.location.x *= S; ob.location.y *= S
+        if name in ('Estructura', 'Pisos', 'Techos', 'Exterior', 'Luces') or (name == 'Garaje' and ob.type == 'MESH'):
+            if ob.type == 'MESH':
+                for v in ob.data.vertices: v.co.x *= S; v.co.y *= S; v.co.z *= SZ
+            ob.location.z *= SZ
+
 # ================================================================ RENDER SETTINGS
 sc.render.engine = 'CYCLES'; cy = sc.cycles
 cy.device = 'CPU'; cy.samples = 96; cy.use_adaptive_sampling = True; cy.adaptive_threshold = .03
@@ -714,7 +731,7 @@ TOUR = {  # id: (nombre, x, z, altura)
 def pano_cam(key):
     name, x, z, h = TOUR[key]
     cd = bpy.data.cameras.new('pano ' + key); cd.type = 'PANO'; cd.panorama_type = 'EQUIRECTANGULAR'; cd.clip_start = .05
-    co = bpy.data.objects.new('pano ' + key, cd); link(co); co.location = (x, -z, h); co.rotation_euler = (math.pi / 2, 0, 0)
+    co = bpy.data.objects.new('pano ' + key, cd); link(co); co.location = (x * S, -z * S, h); co.rotation_euler = (math.pi / 2, 0, 0)
     return co
 
 def render_panos(keys, w=4096, samples=96):
@@ -727,6 +744,7 @@ def render_panos(keys, w=4096, samples=96):
 
 def view_cam(name, loc, target, lens=18):
     cd = bpy.data.cameras.new(name); cd.lens = lens; cd.clip_start = .05
+    loc = (loc[0] * S, loc[1] * S, loc[2]); target = (target[0] * S, target[1] * S, target[2])
     co = bpy.data.objects.new(name, cd); link(co); co.location = loc
     d = Vector(target) - Vector(loc); co.rotation_euler = d.to_track_quat('-Z', 'Y').to_euler(); return co
 

@@ -59,8 +59,8 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </div>
 <div id="views"></div>
 <div id="map" class="panel">
-  <div class="title"><span>Planta</span><span>11,40 × 8,50 m</span></div>
-  <svg id="plan" viewBox="-7.6 -1 28 23" role="img" aria-label="Plano con los puntos del recorrido"></svg>
+  <div class="title"><span>Planta</span><span>≈ 15,4 × 11,5 m</span></div>
+  <svg id="plan" viewBox="-10.3 -1.4 37.8 31" role="img" aria-label="Plano con los puntos del recorrido"></svg>
 </div>
 <div id="lightbox" hidden><figure><img id="lbimg" alt=""><figcaption><span id="lbcap"></span><button id="lbclose">Cerrar</button></figcaption></figure></div>
 
@@ -79,6 +79,7 @@ const PANOS={
   garaje:{n:'Garaje',p:[-3.35,5.95],yaw:0,links:[['sala',[.05,3.05]]]},
   patio:{n:'Patio',p:[15.2,8.5],yaw:-60,links:[['comedor',[11.35,4.72]]]}
 };
+const S=1.35;for(const k in PANOS){const P=PANOS[k];P.p=P.p.map(v=>v*S);P.links.forEach(l=>l[1]=l[1].map(v=>v*S));}
 const VIEWS=[['aerea','Vista aérea sin techo'],['comedor','Comedor'],['patio','Patio y fachada de atrás'],['garaje','Garaje']];
 
 const canvas=document.getElementById('c');
@@ -140,17 +141,18 @@ function placeHot(){
 /* mini plan */
 const svg=document.getElementById('plan');const NS='http://www.w3.org/2000/svg';
 function el(tag,attrs,parent){const e=document.createElementNS(NS,tag);for(const k in attrs)e.setAttribute(k,attrs[k]);(parent||svg).appendChild(e);return e;}
-el('path',{d:'M-7 0 H19.8 V14.3 L-7 21 Z',class:'yard'});
+const G=el('g',{transform:'scale('+S+')'});
+el('path',{d:'M-7 0 H19.8 V14.3 L-7 21 Z',class:'yard'},G);
 [[0,0,4.05,3.65,'Sala'],[4.05,0,3.05,1.94,'Cocina'],[7.1,0,3.3,1.94,'Baño'],[10.4,0,1,1.94,''],[4.05,1.94,7.35,3.31,'Comedor'],[0,3.65,4.05,4.85,'Principal'],[4.05,5.25,3.05,3.25,'Dorm. 2'],[7.1,5.25,4.3,3.25,'Dorm. 3'],[-7,0,7,6.5,'Garaje']]
-.forEach(([x,z,w,d,n])=>{el('rect',{x,y:z,width:w,height:d,class:'room'});if(n){const t=el('text',{x:x+w/2,y:z+d/2+.2,'text-anchor':'middle',class:'lbl'});t.textContent=n;}});
-{const t=el('text',{x:15.5,y:11,'text-anchor':'middle',class:'lbl'});t.textContent='Patio';}
-el('circle',{cx:7.1,cy:3.65,r:.27,fill:'var(--wall)'});
+.forEach(([x,z,w,d,n])=>{el('rect',{x,y:z,width:w,height:d,class:'room'},G);if(n){const t=el('text',{x:x+w/2,y:z+d/2+.2,'text-anchor':'middle',class:'lbl'},G);t.textContent=n;}});
+{const t=el('text',{x:15.5,y:11,'text-anchor':'middle',class:'lbl'},G);t.textContent='Patio';}
+el('circle',{cx:7.1,cy:3.65,r:.27,fill:'var(--wall)'},G);
 const cone=el('path',{id:'cone',d:''});
 const dots={};
-for(const k in PANOS){const [x,z]=PANOS[k].p;const d=el('circle',{cx:x,cy:z,r:.55,class:'dot',tabindex:0,role:'button','aria-label':PANOS[k].n});
+for(const k in PANOS){const [x,z]=PANOS[k].p;const d=el('circle',{cx:x,cy:z,r:.7,class:'dot',tabindex:0,role:'button','aria-label':PANOS[k].n});
   d.addEventListener('click',()=>go(k));d.addEventListener('keydown',e=>{if(e.key==='Enter')go(k);});dots[k]=d;}
 function drawMap(){for(const k in dots)dots[k].classList.toggle('on',k===cur);}
-function drawCone(){if(!cur)return;const [x,z]=PANOS[cur].p,a=lon*Math.PI/180,h=fov*Math.PI/360*camera.aspect,R=3.2;
+function drawCone(){if(!cur)return;const [x,z]=PANOS[cur].p,a=lon*Math.PI/180,h=fov*Math.PI/360*camera.aspect,R=4.3;
   const p1=[x+R*Math.sin(a-h),z-R*Math.cos(a-h)],p2=[x+R*Math.sin(a+h),z-R*Math.cos(a+h)];
   cone.setAttribute('d',`M${x} ${z} L${p1[0]} ${p1[1]} A${R} ${R} 0 0 1 ${p2[0]} ${p2[1]} Z`);}
 
