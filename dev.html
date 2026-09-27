@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reino a caballo</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { position: absolute; image-rendering: pixelated; image-rendering: crisp-edges; }
+  pre { position: fixed; left: 0; right: 0; margin: 0; padding: 8px; font: 16px/1.3 monospace; white-space: pre-wrap; z-index: 9; display: none; }
+  #err { top: 0; color: #ff6b6b; background: rgba(0, 0, 0, 0.85); }
+  #out { bottom: 0; color: #d7ffd7; background: rgba(0, 0, 0, 0.85); }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<pre id="err"></pre>
+<pre id="out"></pre>
+<script src="src/00_config.js"></script>
+<script src="src/01_core.js"></script>
+<script src="src/10_world.js"></script>
+<script src="src/11_props.js"></script>
+<script src="src/20_horse.js"></script>
+<script src="src/30_water.js"></script>
+<script src="src/40_light.js"></script>
+<script src="src/90_main.js"></script>
+</body>
+</html>

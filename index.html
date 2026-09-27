@@ -1,0 +1,3569 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reino a caballo</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { position: absolute; image-rendering: pixelated; image-rendering: crisp-edges; }
+  pre { position: fixed; left: 0; right: 0; margin: 0; padding: 8px; font: 16px/1.3 monospace; white-space: pre-wrap; z-index: 9; display: none; }
+  #err { top: 0; color: #ff6b6b; background: rgba(0, 0, 0, 0.85); }
+  #out { bottom: 0; color: #d7ffd7; background: rgba(0, 0, 0, 0.85); }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<pre id="err"></pre>
+<pre id="out"></pre>
+<script>
+/* src/00_config.js */
+﻿// 00_config.js — constantes, configuración ajustable y disposición del mapa.
+window.K = window.K || {};
+(function (K) {
+  K.W = 480;            // buffer interno
+  K.H = 270;
+  K.GROUND_Y = 170;     // donde pisan cascos y pies
+  K.GRASS_BOTTOM = 190; // la tierra con hierba se ve hasta aquí
+  K.WATER_Y = 190;      // borde superior del agua = eje del espejo
+  K.WORLD_W = 2400;
+
+  K.CONFIG = {
+    seed: 7,
+    reflectivity: 0.3,        // 0.3 en el original; prueba hasta 0.45
+    horseCoat: 'gray',        // 'gray' | 'chestnut'
+
+    walkSpeed: 40,            // px/s
+    gallopSpeed: 80,
+    accelMul: 4,              // acelera a vmáx × 4 por segundo
+    decelMul: 5,              // frena a vmáx × 5 por segundo
+    staminaGallopSeconds: 15, // el galope la agota en ~15 s
+    grazeDelay: 1,            // quieto ≥1 s sobre pradera → pasta
+    grazeSeconds: 3,
+    boostSeconds: 45,
+    pantThreshold: 0.2,
+
+    camLead: 48,
+    camMaxSpeed: 1200,
+
+    // Día de ~4 min. blend = segundos que tarda en llegar al preset de la fase.
+    phases: [
+      { name: 'dawn',  len: 20,  blend: 10 },
+      { name: 'day',   len: 125, blend: 15 },
+      { name: 'dusk',  len: 20,  blend: 12 },
+      { name: 'night', len: 75,  blend: 20 },
+    ],
+    startCycleT: 22,          // arranca justo después del amanecer
+    fastForward: 10,          // tecla G
+    grain: 0.022,
+    darkColor: '#111114',
+    presets: {
+      dawn:  { sky: '#8C8CA6', horizon: '#CF7968', haze: '#F3F1E8', sun: '#FF6D40', darkness: 0.2, wind: 0.1 },
+      day:   { sky: '#98BEEC', horizon: '#C4DAF1', haze: '#F3F1E8', sun: '#FFF766', darkness: 0.0, wind: 1.0 },
+      dusk:  { sky: '#FF7F51', horizon: '#FFDF54', haze: '#FF9068', sun: '#FF7038', darkness: 0.1, wind: 0.1 },
+      night: { sky: '#005EA5', horizon: '#002E80', haze: '#333333', sun: '#DDDDFF', darkness: 0.4, wind: 0.2 },
+      blood: { sky: '#142744', horizon: '#AD2E21', haze: '#5C5D9E', sun: '#C73800', darkness: 0.4, wind: 0.2, darkColor: '#0E0B62' },
+    },
+
+    // La capa del monarca y el estandarte comparten color.
+    capeColors: [
+      ['#C43433', '#932827'],
+      ['#3F6FB5', '#2B4C80'],
+      ['#4E8A3E', '#35602A'],
+      ['#D08A2E', '#9A6220'],
+      ['#7B4AA0', '#553372'],
+    ],
+    skinTones: ['#F2C9A0', '#DDA77F', '#B97C55', '#85573A'],
+  };
+
+  // Disposición representativa de izquierda a derecha (en el juego es procedural).
+  K.MAP = {
+    zones: [
+      { x0: 0,    x1: 450,  type: 'forest' },
+      { x0: 450,  x1: 715,  type: 'meadow' },
+      { x0: 715,  x1: 760,  type: 'grass' },
+      { x0: 760,  x1: 1060, type: 'farm' },
+      { x0: 1060, x1: 1100, type: 'grass' },
+      { x0: 1100, x1: 1300, type: 'cobble' },
+      { x0: 1300, x1: 1340, type: 'grass' },
+      { x0: 1340, x1: 1750, type: 'meadow' },
+      { x0: 1750, x1: 2150, type: 'forest' },
+      { x0: 2150, x1: 2400, type: 'coast' },
+    ],
+    // x = centro del objeto salvo que se indique x0/x1. Se pueden ajustar ±15 px para evitar solapes.
+    things: [
+      { type: 'portal',     x: 100 },
+      { type: 'camp',       x: 330 },
+      { type: 'woodWall',   x: 720 },
+      { type: 'tower',      x: 745 },
+      { type: 'farm',       x0: 760, x1: 1060, streamX: 790 },
+      { type: 'stoneWall',  x: 1080 },
+      { type: 'torch',      x: 1108 },
+      { type: 'shopHammer', x: 1142 },
+      { type: 'campfire',   x: 1200 },
+      { type: 'banner',     x: 1226 },
+      { type: 'shopBow',    x: 1256 },
+      { type: 'torch',      x: 1284 },
+      { type: 'tower',      x: 1302 },
+      { type: 'stoneWall',  x: 1320 },
+      { type: 'statue',     x: 1950 },
+      { type: 'dock',       x0: 2250, x1: 2400 },
+    ],
+  };
+})(window.K);
+
+</script>
+<script>
+/* src/01_core.js */
+// 01_core.js — estado compartido, utilidades de color, ruido, sprites y texto.
+(function (K) {
+  const U = K.util = {};
+
+  // ---- Parámetros de URL (?x=1200&phase=night ...). Los numéricos se convierten.
+  const P = K.params = {};
+  for (const [k, v] of new URLSearchParams(location.search)) P[k] = v !== '' && !isNaN(v) ? +v : v;
+
+  // ---- Estado compartido
+  K.mods = {};      // módulos registrados con K.register
+  K.views = {};     // vistas de depuración (?view=nombre)
+  K.lights = [];    // se vacía en cada frame; los módulos empujan luces en update()
+  K.t = 0; K.dt = 1 / 60; K.frame = 0;
+  K.camX = 0;       // x del mundo en el borde izquierdo (float)
+  K.camXi = 0;      // desplazamiento entero de la cámara para el plano de juego
+  K.input = { left: false, right: false, gallop: false, taps: [] };
+  K.debug = !!P.debug;
+
+  // ---- Matemática
+  U.clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  U.lerp = (a, b, t) => a + (b - a) * t;
+  U.invLerp = (a, b, v) => (v - a) / (b - a);
+  U.smoothstep = (t) => { t = U.clamp(t, 0, 1); return t * t * (3 - 2 * t); };
+  U.mod = (a, n) => ((a % n) + n) % n;
+
+  // ---- Color
+  const rgbCache = new Map();
+  U.rgb = (hex) => {
+    let c = rgbCache.get(hex);
+    if (!c) {
+      let h = hex.replace('#', '');
+      if (h.length === 3) h = h.split('').map((x) => x + x).join('');
+      const n = parseInt(h, 16);
+      c = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+      rgbCache.set(hex, c);
+    }
+    return c;
+  };
+  U.hex = (r, g, b) => '#' + ((1 << 24) | (U.clamp(Math.round(r), 0, 255) << 16) | (U.clamp(Math.round(g), 0, 255) << 8) | U.clamp(Math.round(b), 0, 255)).toString(16).slice(1);
+  U.lerpColor = (a, b, t) => {
+    const A = U.rgb(a), B = U.rgb(b);
+    return U.hex(A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t, A[2] + (B[2] - A[2]) * t);
+  };
+  U.shade = (hex, f) => { const c = U.rgb(hex); return U.hex(c[0] * f, c[1] * f, c[2] * f); };
+
+  // ---- Aleatoriedad y ruido (deterministas)
+  U.mulberry32 = (seed) => () => {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  U.hash = (x, y = 0, s = 0) => {
+    let h = (Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263) + Math.imul(s | 0, 1442695041)) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    h ^= h >>> 16;
+    return (h >>> 0) / 4294967296;
+  };
+  U.noise1 = (x, s = 0) => {
+    const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f);
+    return U.lerp(U.hash(i, 0, s), U.hash(i + 1, 0, s), u);
+  };
+  U.noise2 = (x, y, s = 0) => {
+    const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
+    const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+    const a = U.hash(ix, iy, s), b = U.hash(ix + 1, iy, s), c = U.hash(ix, iy + 1, s), d = U.hash(ix + 1, iy + 1, s);
+    return U.lerp(U.lerp(a, b, ux), U.lerp(c, d, ux), uy);
+  };
+  U.fbm2 = (x, y, oct = 4, s = 0) => {
+    let sum = 0, amp = 0.5, norm = 0, f = 1;
+    for (let o = 0; o < oct; o++) { sum += U.noise2(x * f, y * f, s + o * 17) * amp; norm += amp; amp *= 0.5; f *= 2; }
+    return sum / norm;
+  };
+
+  // ---- Lienzos y sprites
+  U.canvas = (w, h) => {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const x = c.getContext('2d', { willReadFrequently: true });
+    x.imageSmoothingEnabled = false;
+    return { c, x };
+  };
+  U.withFlip = (c) => {
+    const f = U.canvas(c.width, c.height);
+    f.x.translate(c.width, 0); f.x.scale(-1, 1); f.x.drawImage(c, 0, 0);
+    return { r: c, l: f.c, w: c.width, h: c.height };
+  };
+  // rows: array de strings del mismo largo; pal: { carácter: '#hex' }. '.' y ' ' son transparentes.
+  // Devuelve { r, l, w, h }: r mira a la derecha, l es el espejo horizontal.
+  U.sprite = (rows, pal, name = 'sprite') => {
+    const h = rows.length, w = rows.reduce((m, r) => Math.max(m, r.length), 0);
+    rows.forEach((r, i) => { if (r.length !== w) throw new Error(`${name}: la fila ${i} mide ${r.length}, se esperaba ${w}`); });
+    const { c, x } = U.canvas(w, h);
+    const img = x.createImageData(w, h), d = img.data;
+    for (let y = 0; y < h; y++) {
+      for (let i = 0; i < w; i++) {
+        const ch = rows[y][i];
+        if (ch === '.' || ch === ' ') continue;
+        const col = pal[ch];
+        if (!col) throw new Error(`${name}: el carácter '${ch}' no tiene color en la paleta`);
+        const [r, g, b] = U.rgb(col), o = (y * w + i) * 4;
+        d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = 255;
+      }
+    }
+    x.putImageData(img, 0, 0);
+    return U.withFlip(c);
+  };
+  // Crea un sprite dibujándolo con código: fn(ctx, w, h).
+  U.paint = (w, h, fn) => { const { c, x } = U.canvas(w, h); fn(x, w, h); return U.withFlip(c); };
+  U.draw = (ctx, s, x, y, dir = 1) => ctx.drawImage(dir < 0 ? s.l : s.r, Math.round(x), Math.round(y));
+  U.rect = (ctx, x, y, w, h, col) => { ctx.fillStyle = col; ctx.fillRect(Math.round(x), Math.round(y), w, h); };
+  U.px = (ctx, x, y, col) => { ctx.fillStyle = col; ctx.fillRect(Math.round(x), Math.round(y), 1, 1); };
+  // Círculo relleno sin antialiasing, por filas.
+  U.disc = (ctx, cx, cy, r, col) => {
+    ctx.fillStyle = col;
+    cx = Math.round(cx); cy = Math.round(cy);
+    for (let dy = -r; dy <= r; dy++) {
+      const hw = Math.floor(Math.sqrt(r * r - dy * dy) + 0.5);
+      ctx.fillRect(cx - hw, cy + dy, hw * 2 + 1, 1);
+    }
+  };
+  // Devuelve un lienzo temporal compartido con src multiplicado por color (conserva el alfa).
+  // Úsalo para objetos dibujados DESPUÉS de la pasada de oscuridad: U.multiplyTint(spr, K.env.mulColor).
+  const tintPool = new Map();
+  U.multiplyTint = (src, color) => {
+    const key = src.width + 'x' + src.height;
+    let t = tintPool.get(key);
+    if (!t) { t = U.canvas(src.width, src.height); tintPool.set(key, t); }
+    const x = t.x;
+    x.globalCompositeOperation = 'source-over';
+    x.clearRect(0, 0, src.width, src.height);
+    x.drawImage(src, 0, 0);
+    x.globalCompositeOperation = 'multiply';
+    x.fillStyle = color; x.fillRect(0, 0, src.width, src.height);
+    x.globalCompositeOperation = 'destination-in';
+    x.drawImage(src, 0, 0);
+    x.globalCompositeOperation = 'source-over';
+    return t.c;
+  };
+
+  // ---- Fuente de 3×5 para depuración
+  const G = {
+    0: [7, 5, 5, 5, 7], 1: [2, 6, 2, 2, 7], 2: [7, 1, 7, 4, 7], 3: [7, 1, 7, 1, 7], 4: [5, 5, 7, 1, 1],
+    5: [7, 4, 7, 1, 7], 6: [7, 4, 7, 5, 7], 7: [7, 1, 1, 2, 2], 8: [7, 5, 7, 5, 7], 9: [7, 5, 7, 1, 7],
+    A: [2, 5, 7, 5, 5], B: [6, 5, 6, 5, 6], C: [3, 4, 4, 4, 3], D: [6, 5, 5, 5, 6], E: [7, 4, 6, 4, 7],
+    F: [7, 4, 6, 4, 4], G: [3, 4, 5, 5, 3], H: [5, 5, 7, 5, 5], I: [7, 2, 2, 2, 7], J: [1, 1, 1, 5, 2],
+    K: [5, 5, 6, 5, 5], L: [4, 4, 4, 4, 7], M: [5, 7, 7, 5, 5], N: [6, 5, 5, 5, 5], O: [2, 5, 5, 5, 2],
+    P: [6, 5, 6, 4, 4], Q: [2, 5, 5, 6, 3], R: [6, 5, 6, 5, 5], S: [3, 4, 2, 1, 6], T: [7, 2, 2, 2, 2],
+    U: [5, 5, 5, 5, 7], V: [5, 5, 5, 5, 2], W: [5, 5, 7, 7, 5], X: [5, 5, 2, 5, 5], Y: [5, 5, 2, 2, 2],
+    Z: [7, 1, 2, 4, 7], ' ': [0, 0, 0, 0, 0], '.': [0, 0, 0, 0, 2], ':': [0, 2, 0, 2, 0], '-': [0, 0, 7, 0, 0],
+    '%': [5, 1, 2, 4, 5], '/': [1, 1, 2, 4, 4], '=': [0, 7, 0, 7, 0], '(': [1, 2, 2, 2, 1], ')': [4, 2, 2, 2, 4],
+    ',': [0, 0, 0, 2, 4], '+': [0, 2, 7, 2, 0], '×': [0, 5, 2, 5, 0],
+  };
+  U.text = (ctx, str, x, y, col = '#fff', s = 1) => {
+    ctx.fillStyle = col;
+    let cx = Math.round(x);
+    for (const chRaw of String(str)) {
+      const g = G[chRaw.toUpperCase()] || G[' '];
+      for (let r = 0; r < 5; r++) for (let b = 0; b < 3; b++) if (g[r] & (4 >> b)) ctx.fillRect(cx + b * s, Math.round(y) + r * s, s, s);
+      cx += 4 * s;
+    }
+  };
+  U.textWidth = (str, s = 1) => String(str).length * 4 * s - s;
+
+  // ---- Coordenadas de pantalla
+  // f = factor de parallax (1 = plano de juego). Siempre usa K.sx para dibujar algo del mundo.
+  K.sx = (x, f = 1) => (f === 1 ? Math.round(x) - K.camXi : Math.round(x) - Math.round(K.camX * f));
+  K.onScreen = (x, w, f = 1, m = 8) => { const s = K.sx(x, f); return s + w > -m && s < K.W + m; };
+  K.terrainAt = (x) => { for (const z of K.MAP.zones) if (x >= z.x0 && x < z.x1) return z.type; return 'grass'; };
+  K.register = (name, mod) => { mod.name = name; K.mods[name] = mod; return mod; };
+
+  // ---- Semilla y rasgos del monarca (capa compartida con el estandarte)
+  const C = K.CONFIG;
+  K.seed = P.seed !== undefined ? P.seed : (P.shot || P.bench ? C.seed : (Math.random() * 1e9) | 0);
+  K.rand = U.mulberry32(K.seed);
+  const capeIdx = P.cape !== undefined ? P.cape : (P.shot || P.bench ? 0 : Math.floor(K.rand() * C.capeColors.length));
+  K.royal = {
+    cape: C.capeColors[U.mod(capeIdx, C.capeColors.length)],
+    skin: C.skinTones[P.skin !== undefined ? U.mod(P.skin, C.skinTones.length) : (P.shot || P.bench ? 0 : Math.floor(K.rand() * C.skinTones.length))],
+  };
+  if (P.coat) C.horseCoat = P.coat;
+  if (P.refl !== undefined) C.reflectivity = P.refl;
+})(window.K);
+
+</script>
+<script>
+/* src/10_world.js */
+// 10_world.js — MUNDO: parallax de 4 capas (montañas, colinas, árboles lejanos, juncos), suelo por zonas,
+// árboles del bosque, hierba alta y flores, hierba y juncos de primer plano, niebla. Todo se pre-renderiza en init().
+(function (K) {
+  const U = K.util, C = K.CONFIG;
+  const W = K.W, GY = K.GROUND_Y;
+  const TW = 960;                    // ancho de las capas de parallax: se repiten sin costuras
+  const SEED = 1000 + (C.seed | 0);  // el mapa usa semilla fija (no depende de K.seed)
+  const H = (x, y, s) => U.hash(x, y, SEED + s);
+
+  // ---------------------------------------------------------------- utilidades locales
+  const pk = (r, g, b, a = 255) => ((a << 24) | (b << 16) | (g << 8) | r) >>> 0; // RGBA en little-endian
+  const pkc = (c) => pk(c[0], c[1], c[2]);
+  const hx = (hex) => pkc(U.rgb(hex));
+  const WHITE = pk(255, 255, 255);
+
+  // Búfer de píxeles Uint32 que se vuelca a un lienzo de una vez.
+  class PB {
+    constructor(w, h) { this.w = w; this.h = h; this.d = new Uint32Array(w * h); }
+    set(x, y, v) { x = Math.round(x); y = Math.round(y); if (x >= 0 && y >= 0 && x < this.w && y < this.h) this.d[y * this.w + x] = v; }
+    setW(x, y, v) { y = Math.round(y); if (y >= 0 && y < this.h) this.d[y * this.w + U.mod(Math.round(x), this.w)] = v; } // con vuelta en X
+    get(x, y) { return x >= 0 && y >= 0 && x < this.w && y < this.h ? this.d[y * this.w + x] : 0; }
+    canvas() {
+      const { c, x } = U.canvas(this.w, this.h), img = x.createImageData(this.w, this.h);
+      new Uint32Array(img.data.buffer).set(this.d); x.putImageData(img, 0, 0);
+      return c;
+    }
+  }
+
+  // Ruido periódico en X (para capas que se repiten): P = periodo en celdas.
+  const sm = (f) => f * f * (3 - 2 * f);
+  const pn1 = (x, P, s) => { const i = Math.floor(x), u = sm(x - i); return U.lerp(U.hash(U.mod(i, P), 0, s), U.hash(U.mod(i + 1, P), 0, s), u); };
+  const pn2 = (x, y, P, s) => {
+    const ix = Math.floor(x), iy = Math.floor(y), ux = sm(x - ix), uy = sm(y - iy), i0 = U.mod(ix, P), i1 = U.mod(ix + 1, P);
+    return U.lerp(U.lerp(U.hash(i0, iy, s), U.hash(i1, iy, s), ux), U.lerp(U.hash(i0, iy + 1, s), U.hash(i1, iy + 1, s), ux), uy);
+  };
+  const pfbm2 = (x, y, P, oct, s) => {
+    let sum = 0, amp = 0.5, n = 0, f = 1;
+    for (let o = 0; o < oct; o++) { sum += pn2(x * f, y * f, P * f, s + o * 31) * amp; n += amp; amp *= 0.5; f *= 2; }
+    return sum / n;
+  };
+
+  // Disco de borde irregular; fn(x, y, dx, dy) pinta cada píxel.
+  function blob(cx, cy, r, ph, amp, fn) {
+    const R = Math.ceil(r * (1 + amp * 0.5)) + 1, ox = Math.round(cx), oy = Math.round(cy);
+    for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d > R) continue;
+      const a = Math.atan2(dy, dx);
+      const rr = r * (1 - amp * 0.5 + amp * U.noise2(Math.cos(a) * 1.4 + ph, Math.sin(a) * 1.4 + ph, 7));
+      if (d <= rr) fn(ox + dx, oy + dy, dx, dy);
+    }
+  }
+  // Línea de 2 px (luz arriba, sombra debajo o a la derecha).
+  function line(pb, x0, y0, x1, y1, c, cd) {
+    x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+    const n = Math.max(1, Math.abs(x1 - x0), Math.abs(y1 - y0)), flat = Math.abs(x1 - x0) > Math.abs(y1 - y0);
+    for (let k = 0; k <= n; k++) {
+      const x = Math.round(x0 + ((x1 - x0) * k) / n), y = Math.round(y0 + ((y1 - y0) * k) / n);
+      pb.set(x, y, c);
+      if (flat) pb.set(x, y + 1, cd); else pb.set(x + 1, y, cd);
+    }
+  }
+
+  // Ráfaga de viento que viaja hacia la derecha: 0 (quieto) … ~1 (máxima inclinación). u = coordenada de su capa.
+  const gust = (u, ph = 0) => {
+    const w = K.env ? K.env.wind : 0.5;
+    return U.clamp(w * (0.52 + 0.36 * Math.sin(K.t * 1.7 - u * 0.03 + ph) + 0.12 * Math.sin(K.t * 3.3 - u * 0.09 + ph * 1.7)), 0, 1);
+  };
+  const frame3 = (u, ph) => Math.min(2, Math.floor(gust(u, ph) * 3));
+
+  // ---------------------------------------------------------------- zonas y paletas
+  const CLEAR = [[60, 140], [290, 370], [1920, 1980]]; // claros sin árboles: portal, campamento, estatua
+  const inClear = (x, m) => CLEAR.some(([a, b]) => x > a - m && x < b + m);
+  const zoneAt = (x) => K.terrainAt(U.clamp(x, 0, K.WORLD_W - 1));
+  // Muelles (de K.MAP.things): su cubierta está a ras de suelo, así que no crece hierba sobre ni entre los tablones.
+  let DOCKS = [];
+  const onDock = (a, b) => DOCKS.some(([x0, x1]) => b >= x0 && a <= x1); // ¿el tramo [a, b] toca un muelle?
+
+  // Hierba por zona: paleta [luz, base, sombra, profunda], cobertura del borde, briznas y hierba de primer plano.
+  const ZG = {
+    forest: { pal: ['#7E8540', '#646C31', '#4D5427', '#3B411F'], cover: 1, dens: 0.34, hmax: 3, fr: 0.5 },
+    meadow: { pal: ['#ADA955', '#8A9046', '#6E7338', '#565B2B'], cover: 1, dens: 0.6, hmax: 4, fr: 0.62 },
+    grass:  { pal: ['#A1A150', '#80883E', '#656D33', '#4F5629'], cover: 1, dens: 0.45, hmax: 3, fr: 0.55 },
+    farm:   { pal: ['#A1A150', '#80883E', '#656D33', '#4F5629'], cover: 0.3, dens: 0.18, hmax: 2, fr: 0.22 },
+    cobble: { pal: ['#A1A150', '#80883E', '#656D33', '#4F5629'], cover: 0, dens: 0, hmax: 0, fr: 0 },
+    coast:  { pal: ['#B5B077', '#9A9763', '#7E7D50', '#64643F'], cover: 0.14, dens: 0.25, hmax: 3, fr: 0.12 },
+  };
+  for (const z of Object.values(ZG)) z.rgb = z.pal.map(U.rgb);
+  const MAT = { forest: 'dirt', meadow: 'dirt', grass: 'dirt', farm: 'soil', cobble: 'stone', coast: 'sand' };
+
+  const DIRT = ['#6A4B30', '#855F3C', '#4F3724'].map(U.rgb);
+  const STONE = ['#8A8A84', '#6E6E6A', '#54524F', '#78776F', '#64635E'].map(U.rgb);
+  const SAND = ['#CBB78F', '#B8A27A', '#9C8660', '#8A7553'].map(U.rgb);
+  const LEAF = ['#ADA955', '#8A9046', '#6E7338', '#555A2B'];
+  const BARK = ['#5B5243', '#433C31', '#2E2A23'];
+  const dim = (arr, t) => arr.map((c) => U.lerpColor(c, '#3A402E', t));
+
+  // ---------------------------------------------------------------- capas de parallax
+  const LAYERS = [];
+  function makeLayer(o) {
+    const L = Object.assign({ frames: 1, rgb: null, masks: [], cols: [] }, o);
+    for (let k = 0; k < L.frames; k++) {
+      const pb = new PB(TW, L.h);
+      L.paint(pb, k, L.y0);
+      L.masks.push(pb.canvas());
+      L.cols.push(U.canvas(TW, L.h));
+    }
+    LAYERS.push(L);
+    return L;
+  }
+  // Re-colorea la silueta (source-in) solo si el color cambió de forma apreciable.
+  function tintLayer(L, hz) {
+    const a = L.base, t = L.haze;
+    const r = Math.round(a[0] + (hz[0] - a[0]) * t), g = Math.round(a[1] + (hz[1] - a[1]) * t), b = Math.round(a[2] + (hz[2] - a[2]) * t);
+    const p = L.rgb;
+    if (p && Math.abs(p[0] - r) + Math.abs(p[1] - g) + Math.abs(p[2] - b) < 3) return;
+    L.rgb = [r, g, b];
+    const col = `rgb(${r},${g},${b})`;
+    L.masks.forEach((m, k) => {
+      const x = L.cols[k].x;
+      x.globalCompositeOperation = 'source-over';
+      x.clearRect(0, 0, TW, L.h); x.drawImage(m, 0, 0);
+      x.globalCompositeOperation = 'source-in';
+      x.fillStyle = col; x.fillRect(0, 0, TW, L.h);
+      x.globalCompositeOperation = 'source-over';
+    });
+  }
+  // Dibuja un lienzo de TW de ancho repetido con el factor f, recortado a la pantalla.
+  function drawTiled(ctx, c, f, y, h) {
+    const s = K.sx(0, f);
+    for (let x = U.mod(s, TW) - TW; x < W; x += TW) {
+      const dx = Math.max(0, x), sw = Math.min(W, x + TW) - dx;
+      if (sw > 0) ctx.drawImage(c, dx - x, 0, sw, h, dx, y, sw, h);
+    }
+  }
+
+  // Montañas: picos en V con cresta irregular, base bajo el suelo.
+  function paintMountains(pb, _f, y0) {
+    const r = U.mulberry32(SEED + 1), peaks = [];
+    for (let k = 0; k < 7; k++) peaks.push({ x: k * 137 + r() * 60, y: 110 + r() * 20, sl: 0.3 + r() * 0.22, sr: 0.3 + r() * 0.22 });
+    for (let k = 0; k < 9; k++) peaks.push({ x: r() * TW, y: 128 + r() * 14, sl: 0.55 + r() * 0.3, sr: 0.55 + r() * 0.3 });
+    for (let x = 0; x < TW; x++) {
+      let top = 999;
+      for (const p of peaks) {
+        const d = U.mod(x - p.x + TW / 2, TW) - TW / 2;
+        top = Math.min(top, p.y + Math.abs(d) * (d < 0 ? p.sl : p.sr));
+      }
+      top += (pn1(x / 12, 80, SEED + 2) - 0.5) * 4 + (pn1(x / 40, 24, SEED + 3) - 0.5) * 7;
+      for (let y = Math.round(Math.min(top, 158)); y < y0 + pb.h; y++) pb.set(x, y - y0, WHITE);
+    }
+  }
+  // Colinas suaves con bosquecillos redondeados en las crestas.
+  function paintHills(pb, _f, y0) {
+    const r = U.mulberry32(SEED + 11), top = new Float32Array(TW);
+    for (let x = 0; x < TW; x++) {
+      top[x] = 154 - 10 * pn1(x / 160, 6, SEED + 12) - 7 * pn1(x / 60, 16, SEED + 13) - 1.5 * pn1(x / 20, 48, SEED + 14);
+      for (let y = Math.round(top[x]); y < y0 + pb.h; y++) pb.set(x, y - y0, WHITE);
+    }
+    for (let k = 0; k < 30; k++) {
+      let x = r() * TW;
+      const n = 1 + ((r() * 4) | 0);
+      for (let j = 0; j < n; j++) {
+        const rad = 2 + ((r() * 2.6) | 0), ty = top[U.mod(Math.round(x), TW)];
+        blob(x, ty - rad * 0.4, rad, r() * 40, 0.2, (px, py) => pb.setW(px, py - y0, WHITE));
+        x += rad + 1 + r() * 3;
+      }
+    }
+  }
+  // Línea de árboles lejanos: copas redondas y coníferas, troncos entre copas y sotobosque continuo.
+  function paintTreeline(pb, _f, y0) {
+    const r = U.mulberry32(SEED + 21), B = y0 + pb.h;
+    const put = (x, y) => pb.setW(x, y - y0, WHITE);
+    for (let x = 0; x < TW; x++) { const yb = Math.round(160 + (pn1(x / 8, 120, SEED + 22) - 0.5) * 5); for (let y = yb; y < B; y++) put(x, y); }
+    let x = 0;
+    while (x < TW) {
+      if (r() < 0.3) {
+        const apex = 122 + r() * 16, h = 22 + r() * 14, hw = 5 + r() * 3;
+        for (let k = 0; k <= h; k++) {
+          const w = Math.floor((k * hw) / h) - (k > 3 && k % 4 === 0 ? 1 : 0);
+          for (let i = -w; i <= w; i++) put(x + i, apex + k);
+        }
+        for (let y = Math.round(apex + h); y < B; y++) put(x, y);
+      } else {
+        const cy = 134 + r() * 14, rad = 5 + r() * 5;
+        for (let y = Math.round(cy); y < B; y++) { put(x, y); if (rad > 7) put(x + 1, y); }
+        blob(x, cy, rad, r() * 40, 0.35, (px, py) => put(px, py));
+        blob(x - rad * 0.7, cy + rad * 0.35, rad * 0.62, r() * 40, 0.3, (px, py) => put(px, py));
+        blob(x + rad * 0.7, cy + rad * 0.3, rad * 0.6, r() * 40, 0.3, (px, py) => put(px, py));
+      }
+      x += 5 + r() * 8;
+    }
+  }
+  // Juncos de fondo: 3 frames (la punta se inclina 0, 1, 2 px). Cada racimo vive dentro de su trozo de CW px,
+  // así se puede dibujar cada trozo con su propio frame sin cortar tallos.
+  const CW = 24;
+  let reedStalks = null;
+  function reedData() {
+    const r = U.mulberry32(SEED + 31), st = [];
+    for (let cs = 0; cs < TW; cs += CW) {
+      if (r() < 0.22) continue;
+      const nc = 1 + (r() < 0.5 ? 1 : 0);
+      for (let c = 0; c < nc; c++) {
+        const bx0 = cs + 4 + r() * (CW - 11), n = 3 + ((r() * 4) | 0);
+        for (let k = 0; k < n; k++) {
+          const leaf = r() < 0.3;
+          st.push({
+            bx: Math.round(U.clamp(bx0 + (r() - 0.5) * 5, cs + 2, cs + CW - 6)),
+            h: Math.round(leaf ? 5 + r() * 6 : 8 + r() * 14),
+            c: leaf ? (r() < 0.5 ? -1.2 : 1.4) : (r() - 0.4) * 1.6,
+            cat: !leaf && r() < 0.28,
+          });
+        }
+      }
+    }
+    return st;
+  }
+  function paintReeds(pb, f, y0) {
+    const put = (x, y) => pb.set(x, y - y0, WHITE);
+    for (let x = 0; x < TW; x++) { const yb = 167 + Math.round(pn1(x / 3, 320, SEED + 32) * 2.4); for (let y = yb; y < y0 + pb.h; y++) put(x, y); }
+    for (const s of reedStalks) {
+      for (let k = 0; k < s.h; k++) {
+        const q = k / (s.h - 1);
+        put(s.bx + Math.round(s.c * q * q + f * Math.pow(q, 1.6)), 171 - k);
+      }
+      if (s.cat) {
+        const tx = s.bx + Math.round(s.c + f), ty = 171 - s.h;
+        for (let k = 1; k <= 4; k++) { put(tx, ty + k); put(tx + 1, ty + k); }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- suelo (franja de mundo pre-renderizada)
+  const GX0 = -32, GW = K.WORLD_W + 64, GT = 160, GH = 44;   // x −32…2432, y 160…203
+  const FT = 162, FH = 14;                                   // franja de hierba delantera: y 162…175
+  let cols = null;       // datos por columna: paleta mezclada, cobertura, briznas…
+  let ground = null, fringe = null;
+
+  function buildCols() {
+    cols = [];
+    for (let i = 0; i < GW; i++) {
+      const wx = GX0 + i, acc = new Float32Array(12);
+      let ws = 0, cover = 0, dens = 0, hmax = 0, fr = 0;
+      for (let k = -4; k <= 4; k++) {
+        const z = ZG[zoneAt(wx + k * 6)], w = 5 - Math.abs(k);
+        for (let j = 0; j < 4; j++) for (let c = 0; c < 3; c++) acc[j * 3 + c] += z.rgb[j][c] * w;
+        cover += z.cover * w; dens += z.dens * w; hmax += z.hmax * w; fr += z.fr * w; ws += w;
+      }
+      const pal = [0, 1, 2, 3].map((j) => pk(Math.round(acc[j * 3] / ws), Math.round(acc[j * 3 + 1] / ws), Math.round(acc[j * 3 + 2] / ws)));
+      cols.push({ pal, cover: cover / ws, dens: dens / ws, hmax: hmax / ws, fr: fr / ws, zone: zoneAt(wx) });
+    }
+  }
+
+  // Tile de tierra 32×32: terrones claros con sombra debajo y alguna grieta. Índices: 0 base, 1 luz, 2 sombra.
+  function dirtTile(r) {
+    const t = new Uint8Array(32 * 32), n = 6 + ((r() * 3) | 0);
+    for (let k = 0; k < n; k++) {
+      const rx = 1.6 + r() * 3.4, ry = 0.9 + r() * 1.3;
+      const cx = 1 + rx + r() * (29 - 2 * rx), cy = 4 + r() * 22;
+      for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++) for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++) {
+        if (x < 1 || x > 30 || y < 0 || y > 31) continue;
+        if (((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1) t[y * 32 + x] = 1;
+      }
+    }
+    for (let y = 30; y >= 0; y--) for (let x = 0; x < 32; x++) if (t[y * 32 + x] === 1 && t[(y + 1) * 32 + x] === 0) t[(y + 1) * 32 + x] = 2;
+    for (let k = 0; k < 3; k++) {
+      const y = 5 + ((r() * 24) | 0), x0 = 1 + ((r() * 26) | 0), len = 2 + ((r() * 3) | 0);
+      for (let x = x0; x < x0 + len; x++) if (t[y * 32 + x] === 0) t[y * 32 + x] = 2;
+    }
+    return t;
+  }
+
+  // Empedrado: hiladas de piedras de ancho variable (continuas, sin rejilla visible).
+  const CX0 = 1040, CX1 = 1360;
+  function cobbleLayout(r) {
+    return [[170, 4], [174, 5], [179, 5], [184, 6]].map(([y, h]) => {
+      const n = CX1 - CX0, start = new Int16Array(n), wid = new Uint8Array(n), tone = new Uint8Array(n);
+      let x = CX0 - ((r() * 8) | 0);
+      while (x < CX1) {
+        const w = 6 + ((r() * 7) | 0), tn = r() < 0.22 ? 1 : r() < 0.25 ? 2 : 0;
+        for (let k = 0; k < w; k++) { const j = x + k - CX0; if (j >= 0 && j < n) { start[j] = x; wid[j] = w; tone[j] = tn; } }
+        x += w;
+      }
+      return { y, h, start, wid, tone };
+    });
+  }
+  function stoneAt(cob, wx, y) {
+    const c = cob.find((q) => y >= q.y && y < q.y + q.h);
+    if (!c) return STONE[2];
+    const j = U.clamp(wx - CX0, 0, CX1 - CX0 - 1), lx = wx - c.start[j], ly = y - c.y, w = c.wid[j];
+    if (lx >= w - 1 || ly === c.h - 1) return STONE[2];
+    if (ly === 0 && lx < w - 2 && lx > 0) return STONE[0];
+    return c.tone[j] === 1 ? STONE[3] : c.tone[j] === 2 ? STONE[4] : STONE[1];
+  }
+  function sandAt(wx, y) {
+    if (y === GY) return SAND[0];
+    const wet = 184 + Math.round(U.noise1(wx * 0.08, 51) * 3);
+    if (y >= wet) return y >= 188 ? SAND[3] : SAND[2];
+    const k = wx + y * 3;
+    if (U.mod(k, 7) < 3 && H(Math.floor(k / 7), y, 52) < 0.2) return SAND[2];
+    return SAND[1];
+  }
+  const matAt = (wx, y) => MAT[zoneAt(wx + (U.noise2(wx * 0.09, y * 0.21, 41) - 0.5) * 20)];
+
+  function buildGround(roots) {
+    const pb = new PB(GW, GH), rt = U.mulberry32(SEED + 41);
+    const tiles = [0, 1, 2, 3, 4].map(() => dirtTile(rt));
+    const cob = cobbleLayout(U.mulberry32(SEED + 43));
+    const shadeRow = (c, y) => (y >= 186 ? [c[0] * 0.86, c[1] * 0.86, c[2] * 0.86] : c);
+    const DS = pkc(DIRT[2]);
+    for (let i = 0; i < GW; i++) {
+      const wx = GX0 + i, g = cols[i];
+      // cuerpo: tierra / tierra de labor / piedra / arena, con fronteras irregulares
+      for (let y = GY; y < GT + GH; y++) {
+        const m = matAt(wx, y);
+        let c;
+        if (m === 'stone') c = stoneAt(cob, wx, y);
+        else if (m === 'sand') c = sandAt(wx, y);
+        else {
+          const t = tiles[(H(Math.floor(wx / 32), 0, 44) * tiles.length) | 0];
+          c = shadeRow(DIRT[t[U.mod(y - GY, 32) * 32 + U.mod(wx, 32)]], y);
+          if (m === 'soil' && y === GY) c = DIRT[1];
+        }
+        pb.set(i, y - GT, pk(Math.round(c[0]), Math.round(c[1]), Math.round(c[2])));
+      }
+      // borde de hierba de 2–3 px, sombra bajo el borde, flecos y briznas que sobresalen
+      if (g.cover > 0.1 + 0.8 * U.noise1(wx * 0.11, 21)) {
+        const th = U.noise1(wx * 0.29, 9) > 0.55 ? 3 : 2, P = g.pal;
+        pb.set(i, GY - GT, P[0]); pb.set(i, GY + 1 - GT, P[1]);
+        if (th === 3) pb.set(i, GY + 2 - GT, P[2]);
+        const yb = GY + th, mb = matAt(wx, yb);
+        if ((mb === 'dirt' || mb === 'soil') && U.noise1(wx * 0.37, 13) > 0.3) pb.set(i, yb - GT, DS);
+        if (H(wx, 3, 0) < 0.16) { pb.set(i, yb - GT, P[2]); if (H(wx, 4, 0) < 0.5) pb.set(i, yb + 1 - GT, P[3]); }
+        const pr = g.dens * (0.35 + 1.3 * U.noise1(wx * 0.23, 17));
+        if (H(wx, 5, 0) < pr) {
+          const h = 1 + Math.floor(H(wx, 6, 0) * g.hmax), dark = H(wx, 8, 0) < 0.3;
+          const lean = h >= 3 && H(wx, 9, 0) < 0.5 ? (H(wx, 7, 0) < 0.5 ? -1 : 1) : 0;
+          for (let k = 1; k <= h; k++) {
+            const top = k === h;
+            pb.set(i + (top ? lean : 0), GY - k - GT, dark ? P[2] : top && h > 1 ? P[0] : P[1]);
+          }
+        }
+      }
+    }
+    // raíces bajo los árboles del bosque
+    for (const rt2 of roots) {
+      const r = U.mulberry32(SEED + 900 + rt2.x);
+      for (let k = 0; k < 3; k++) {
+        const dir = k === 0 ? -1 : k === 1 ? 1 : r() < 0.5 ? -1 : 1, len = 3 + ((r() * 5) | 0);
+        let x = rt2.x + dir * (2 + ((r() * 4) | 0)), y = GY + 3;
+        for (let j = 0; j < len; j++) { pb.set(x - GX0, y - GT, DS); x += dir * (r() < 0.6 ? 1 : 0); y += r() < 0.7 ? 1 : 0; }
+      }
+    }
+    return pb.canvas();
+  }
+
+  // Hierba corta delante de los cascos: flecos densos de 2–5 px con base en y=174.
+  function buildFringe() {
+    const pb = new PB(GW, FH);
+    for (let i = 0; i < GW; i++) {
+      const wx = GX0 + i, g = cols[i];
+      if (onDock(wx - 1, wx + 1)) continue; // la punta puede inclinarse 1 px
+      if (H(wx, 11, 0) >= g.fr * (0.45 + U.noise1(wx * 0.19, 23) * 0.9)) continue;
+      const h = 2 + Math.floor(H(wx, 12, 0) * 3.99), P = g.pal;
+      const lean = h >= 4 && H(wx, 13, 0) < 0.5 ? (H(wx, 14, 0) < 0.5 ? -1 : 1) : 0;
+      for (let k = 0; k < h; k++) {
+        const y = 174 - k, top = k === h - 1;
+        pb.set(i + (top ? lean : 0), y - FT, top ? P[1] : k === 0 ? P[3] : P[2]);
+      }
+    }
+    return pb.canvas();
+  }
+
+  // ---------------------------------------------------------------- árboles del plano de juego
+  function treeShape(r, s) {
+    const w = Math.round(120 * s), h = Math.round(164 * s);
+    const bx = Math.round(w / 2 + (r() - 0.5) * 8 * s);
+    const cy = Math.round(h * (0.27 + r() * 0.04));
+    const cx = Math.round(w / 2 + (r() - 0.5) * 10 * s);
+    const rx = (31 + r() * 7) * s, ry = (24 + r() * 5) * s;
+    const clumps = [{ x: cx, y: cy - 2 * s, r: 16 * s, ph: r() * 50 }];
+    const n = 10 + ((r() * 5) | 0);
+    for (let k = 0; k < n; k++) {
+      const a = r() * Math.PI * 2, d = 0.35 + 0.65 * Math.sqrt(r());
+      const x = cx + Math.cos(a) * d * (rx - 11 * s), y = cy + Math.sin(a) * d * (ry - 9 * s);
+      clumps.push({ x, y, r: (9 + r() * 5.5) * s * (y > cy + 6 * s ? 0.85 : 1), ph: r() * 50 });
+    }
+    clumps.sort((a, b) => a.y - b.y); // arriba primero: los racimos de abajo quedan delante
+    const lower = clumps.filter((c) => c.y > cy);
+    const branches = [], nb = 2 + ((r() * 3) | 0);
+    for (let k = 0; k < nb; k++) {
+      const c = lower[(r() * lower.length) | 0] || clumps[0];
+      branches.push({ y0: cy + (14 + r() * 18) * s, x1: c.x, y1: c.y });
+    }
+    const streaks = [];
+    for (let k = 0; k < 7; k++) streaks.push({ u: 0.3 + r() * 0.4, y: cy + r() * (h - cy - 6), len: 3 + ((r() * 6) | 0) });
+    return { w, h, s, bx, cx, cy, rx, ry, clumps, branches, streaks, wb: (8.5 + r() * 2.5) * s, wt: 4.5 * s, ph: r() * 100 };
+  }
+  const trunkX = (T, y) => {
+    const t = U.clamp((T.h - 1 - y) / (T.h - 1 - T.cy), 0, 1);
+    return T.bx + (T.cx - T.bx) * Math.pow(t, 1.4) + (U.noise1(y * 0.06 + T.ph, 7) - 0.5) * 3 * T.s;
+  };
+  const trunkW = (T, y) => {
+    const t = U.clamp((T.h - 1 - y) / (T.h - 1 - T.cy), 0, 1);
+    return T.wb + (T.wt - T.wb) * t + (t < 0.09 ? Math.pow(1 - t / 0.09, 2) * 8 * T.s : 0);
+  };
+  function renderTree(T, pal, bark, sway) {
+    const pb = new PB(T.w, T.h), P = pal.map(hx), B = bark.map(hx);
+    for (let y = T.h - 1; y >= T.cy; y--) {
+      const xc = trunkX(T, y), w = trunkW(T, y), xl = Math.round(xc - w / 2), xr = Math.max(xl, Math.round(xc + w / 2) - 1);
+      for (let x = xl; x <= xr; x++) { const u = (x - xl) / Math.max(1, xr - xl); pb.set(x, y, u < 0.26 ? B[0] : u > 0.68 ? B[2] : B[1]); }
+    }
+    for (const st of T.streaks) for (let k = 0; k < st.len; k++) {
+      const y = Math.round(st.y) + k, xc = trunkX(T, y), w = trunkW(T, y);
+      pb.set(Math.round(xc - w / 2 + st.u * w), y, B[2]);
+    }
+    for (const b of T.branches) line(pb, trunkX(T, b.y0), b.y0, b.x1 + sway, b.y1, B[1], B[2]);
+    for (const c of T.clumps) blob(c.x + sway, c.y, c.r, c.ph, 0.3, (x, y, dx, dy) => {
+      const gy = (y - T.cy) / T.ry;
+      const sh = (dy / c.r) * 0.75 + (dx / c.r) * 0.2 + gy * 0.5 + (U.noise2((x - sway) * 0.33, y * 0.33, 13 + T.ph) - 0.5) * 0.55;
+      pb.set(x, y, sh < -0.42 ? P[0] : sh < 0.12 ? P[1] : sh < 0.62 ? P[2] : P[3]);
+    });
+    return pb.canvas();
+  }
+  function makeTreeVariant(r, s, pal, bark) {
+    const T = treeShape(r, s);
+    const f = [0, 1].map((sw) => U.withFlip(renderTree(T, pal, bark, sw)));
+    return { w: T.w, h: T.h, bx: T.bx, r: f.map((q) => q.r), l: f.map((q) => q.l) };
+  }
+
+  // Arbusto del sotobosque (estático).
+  function makeBush(r, pal) {
+    const w = 30, h = 16, pb = new PB(w, h), P = pal.map(hx), bl = [];
+    const n = 3 + ((r() * 3) | 0);
+    for (let k = 0; k < n; k++) bl.push({ x: 8 + r() * 14, y: h - 4 - r() * 3, r: 3.5 + r() * 3.5, ph: r() * 50 });
+    bl.sort((a, b) => a.y - b.y);
+    for (const b of bl) blob(b.x, b.y, b.r, b.ph, 0.3, (x, y, dx, dy) => {
+      const sh = (dy / b.r) * 0.8 + (dx / b.r) * 0.2 + (U.noise2(x * 0.4, y * 0.4, 17) - 0.5) * 0.5;
+      pb.set(x, y, sh < -0.35 ? P[0] : sh < 0.2 ? P[1] : sh < 0.6 ? P[2] : P[3]);
+    });
+    const q = U.withFlip(pb.canvas());
+    return { w, h, r: q.r, l: q.l };
+  }
+
+  // Mata de briznas con 3 frames de viento (la punta se inclina 0, 1 y 2 px a la derecha).
+  // o: { w, h, n, spread, pal: [punta, medio, base], head?, cat?, flowers? }
+  function makeTuft(r, o) {
+    const PAD = 3, bl = [], fl = [];
+    for (let k = 0; k < o.n; k++) {
+      const bx = Math.round(o.w / 2 + (r() - 0.5) * o.spread);
+      bl.push({ bx, h: Math.max(3, Math.round(o.h * (0.45 + r() * 0.55))), c: (bx - o.w / 2) * 0.45 + (r() - 0.5) * 1.6, head: !!o.head && r() < 0.4, cat: !!o.cat && r() < 0.45 });
+    }
+    bl.sort((a, b) => b.h - a.h);
+    if (o.flowers) for (let k = 0; k < o.flowers.n; k++) fl.push({ bx: Math.round(o.w / 2 + (r() - 0.5) * o.spread), h: Math.round(o.h * (0.4 + r() * 0.45)), col: o.flowers.cols[(r() * o.flowers.cols.length) | 0] });
+    const P = o.pal.map(hx), frames = [];
+    for (let f = 0; f < 3; f++) {
+      const pb = new PB(o.w + PAD * 2 + 2, o.h);
+      const tip = (b, q) => PAD + b.bx + Math.round(b.c * q * q + f * q * q);
+      for (const b of bl) {
+        for (let k = 0; k < b.h; k++) {
+          const q = k / (b.h - 1);
+          pb.set(tip(b, q), o.h - 1 - k, q < 0.34 ? P[2] : q < 0.72 ? P[1] : P[0]);
+        }
+        const tx = tip(b, 1), ty = o.h - b.h;
+        if (b.head) { const hc = hx(o.head); pb.set(tx, ty, hc); pb.set(tx, ty + 1, hc); }
+        if (b.cat) { const cc = hx(o.cat); for (let k = 1; k <= 3; k++) { pb.set(tx, ty + k, cc); pb.set(tx + 1, ty + k, cc); } }
+      }
+      for (const fw of fl) {
+        const b = { bx: fw.bx, c: 0.3 }, st = hx(o.pal[2]);
+        for (let k = 0; k < fw.h; k++) pb.set(tip(b, k / (fw.h - 1)), o.h - 1 - k, st);
+        const tx = tip(b, 1), ty = o.h - fw.h - 1, fc = hx(fw.col);
+        pb.set(tx, ty, fc); pb.set(tx - 1, ty + 1, fc); pb.set(tx + 1, ty + 1, fc); pb.set(tx, ty + 1, hx('#E7C85A'));
+      }
+      frames.push(pb.canvas());
+    }
+    return { w: o.w + PAD * 2 + 2, h: o.h, ax: PAD + Math.round(o.w / 2), f: frames };
+  }
+
+  // ---------------------------------------------------------------- objetos colocados
+  let MOUNT, HILLS, FARTREES, REEDS;
+  let backTrees = [], frontTrees = [], bushes = [], tufts = [], fronts = [], shore = [];
+  let fogMask = null, fogCol = null, fogRGB = null, fogA = -1, fogOff = 0;
+  const FOG_Y = 140, FOG_H = 90;
+
+  function place(r, x0, x1, s0, s1, fn) { for (let x = x0 + r() * s0; x < x1; x += s0 + r() * (s1 - s0)) fn(Math.round(x)); }
+
+  function buildFog() {
+    const pb = new PB(TW, FOG_H);
+    for (let y = 0; y < FOG_H; y++) {
+      const wy = FOG_Y + y;
+      const band = Math.exp(-(((wy - 174) / 10) ** 2)) + 0.8 * Math.exp(-(((wy - 204) / 12) ** 2)) + 0.35 * Math.exp(-(((wy - 150) / 8) ** 2));
+      for (let x = 0; x < TW; x++) {
+        const n = pfbm2(x / 48, wy / 7, TW / 48, 3, SEED + 61);
+        const m = Math.min(1, band) * U.smoothstep((n - 0.38) / 0.3);
+        const q = Math.min(4, Math.floor(m * 5)) / 4; // alfa escalonado, como los halos
+        if (q > 0) pb.d[y * TW + x] = pk(255, 255, 255, Math.round(q * 255));
+      }
+    }
+    fogMask = pb.canvas();
+    fogCol = U.canvas(TW, FOG_H);
+  }
+
+  function init() {
+    const R = U.mulberry32(SEED);
+    DOCKS = K.MAP.things.filter((t) => t.type === 'dock').map((t) => [t.x0 - 2, t.x1 + 2]);
+
+    // Parallax: silueta de un color, más bruma cuanto más lejos.
+    reedStalks = reedData();
+    MOUNT = makeLayer({ f: 0.05, y0: 100, h: 72, base: U.rgb('#717565'), haze: 0.6, paint: paintMountains });
+    HILLS = makeLayer({ f: 0.15, y0: 126, h: 46, base: U.rgb('#717565'), haze: 0.35, paint: paintHills });
+    FARTREES = makeLayer({ f: 0.3, y0: 112, h: 60, base: U.rgb('#555849'), haze: 0.15, paint: paintTreeline });
+    REEDS = makeLayer({ f: 0.5, y0: 144, h: 28, base: U.rgb('#B59D69'), haze: 0, frames: 3, paint: paintReeds });
+
+    // Árboles: 5 variantes delante, 4 detrás (más oscuras y pequeñas).
+    const frontV = [0, 1, 2, 3, 4].map(() => makeTreeVariant(R, 0.92 + R() * 0.13, LEAF, BARK));
+    const backV = [0, 1, 2, 3].map(() => makeTreeVariant(R, 0.74 + R() * 0.1, dim(LEAF, 0.38), dim(BARK, 0.25)));
+    const forests = K.MAP.zones.filter((z) => z.type === 'forest');
+    for (const z of forests) {
+      place(R, z.x0, z.x1, 36, 58, (x) => { if (!inClear(x, 26)) frontTrees.push({ x, v: frontV[(R() * frontV.length) | 0], flip: R() < 0.5, ph: R() * 6 }); });
+      place(R, z.x0 + 14, z.x1, 30, 50, (x) => { if (!inClear(x, 14)) backTrees.push({ x, v: backV[(R() * backV.length) | 0], flip: R() < 0.5, ph: R() * 6 }); });
+    }
+    // Sotobosque
+    const bushV = [0, 1, 2, 3].map(() => makeBush(R, ['#7C8240', '#62682F', '#4A5026', '#383D1D']));
+    for (const z of forests) place(R, z.x0, z.x1, 22, 46, (x) => { if (!inClear(x, 4)) bushes.push({ x, v: bushV[(R() * bushV.length) | 0], flip: R() < 0.5 }); });
+
+    // Hierba alta y flores en praderas (detrás del jinete)
+    const FLW = { n: 2, cols: ['#ECE6D2', '#E3C35A', '#B9A3C8'] };
+    const tuftV = [];
+    for (let k = 0; k < 6; k++) tuftV.push(makeTuft(R, { w: 12, h: 11 + ((R() * 5) | 0), n: 7, spread: 8, pal: ['#ADA955', '#8A9046', '#6E7338'], head: '#CFC787', flowers: k >= 4 ? FLW : null }));
+    const tuftS = [0, 1, 2].map(() => makeTuft(R, { w: 9, h: 7, n: 5, spread: 6, pal: ['#A1A150', '#80883E', '#656D33'] }));
+    const duneV = [0, 1].map(() => makeTuft(R, { w: 10, h: 9, n: 6, spread: 7, pal: ['#B5B077', '#9A9763', '#7E7D50'] }));
+    for (let x = 0; x < K.WORLD_W; x += 6 + R() * 12) {
+      const z = zoneAt(x), xi = Math.round(x);
+      if (z === 'meadow' && R() < 0.8) tufts.push({ x: xi, v: R() < 0.7 ? tuftV[(R() * tuftV.length) | 0] : tuftS[(R() * tuftS.length) | 0], ph: R() * 6 });
+      else if (z === 'grass' && R() < 0.45) tufts.push({ x: xi, v: tuftS[(R() * tuftS.length) | 0], ph: R() * 6 });
+      else if (z === 'coast' && R() < 0.18) tufts.push({ x: xi, v: duneV[(R() * duneV.length) | 0], ph: R() * 6 });
+    }
+
+    // Hierba delante de los cascos y juncos de la orilla
+    const FP = {
+      lush: ['#80883E', '#656D33', '#4F5629'], dark: ['#646C31', '#4D5427', '#3B411F'], dune: ['#9A9763', '#7E7D50', '#64643F'],
+    };
+    const frontV2 = {};
+    for (const [k, pal] of Object.entries(FP)) frontV2[k] = [0, 1, 2, 3].map(() => makeTuft(R, { w: 7, h: 7 + ((R() * 3) | 0), n: 4, spread: 5, pal }));
+    const PROB = { forest: ['dark', 0.8], meadow: ['lush', 0.9], grass: ['lush', 0.75], farm: ['lush', 0.3], cobble: [null, 0], coast: ['dune', 0.3] };
+    for (let x = 0; x < K.WORLD_W; x += 10 + R() * 14) {
+      const [kind, p] = PROB[zoneAt(x)];
+      if (kind && R() < p) fronts.push({ x: Math.round(x), v: frontV2[kind][(R() * 4) | 0], ph: R() * 6 });
+    }
+    const reedV = [0, 1, 2].map(() => makeTuft(R, { w: 10, h: 12 + ((R() * 4) | 0), n: 6, spread: 8, pal: ['#BFA877', '#A08A58', '#7E6C44'], cat: '#5C4430' }));
+    const shoreX = [520, 548, 1395, 1604, 1712, 2166, 2182, 2203, 2226, 2240];
+    for (const x of shoreX) shore.push({ x: x + Math.round((R() - 0.5) * 6), v: reedV[(R() * reedV.length) | 0], ph: R() * 6 });
+
+    // Suelo y flecos delanteros (una sola franja del ancho del mundo)
+    buildCols();
+    ground = buildGround(frontTrees);
+    fringe = buildFringe();
+    buildFog();
+
+    // Nada de matas sobre el muelle. Se filtra al final para no alterar la secuencia de R() del resto del mapa.
+    const offDock = (o) => !onDock(o.x - o.v.ax, o.x - o.v.ax + o.v.w - 1);
+    tufts = tufts.filter(offDock);
+    fronts = fronts.filter(offDock);
+
+    // Orden de dibujo por x
+    for (const a of [backTrees, frontTrees, bushes, tufts, fronts, shore]) a.sort((p, q) => p.x - q.x);
+  }
+
+  // Dibuja una lista ordenada por x, solo lo visible. fn(o, sx) dibuja un objeto.
+  function drawList(ctx, list, margin, fn) {
+    const x0 = K.camXi - margin, x1 = K.camXi + W + margin;
+    for (const o of list) { if (o.x < x0) continue; if (o.x > x1) break; fn(o, K.sx(o.x)); }
+  }
+  const drawTree = (ctx) => (t, sx) => {
+    const v = t.v, fr = gust(t.x, t.ph) > 0.55 ? 1 : 0;
+    const ax = t.flip ? v.w - 1 - v.bx : v.bx;
+    ctx.drawImage(t.flip ? v.l[fr] : v.r[fr], sx - ax, GY + 2 - v.h);
+  };
+  const drawTuft = (ctx, baseY) => (t, sx) => {
+    const v = t.v;
+    ctx.drawImage(v.f[frame3(t.x, t.ph)], sx - v.ax, baseY + 1 - v.h);
+  };
+
+  K.register('world', {
+    order: 10,
+    init,
+    update(dt) {
+      if (!MOUNT) return;
+      const e = K.env, hz = U.rgb(e.haze);
+      for (const L of LAYERS) tintLayer(L, hz);
+      // Niebla: color de la bruma, más densa al amanecer y de noche.
+      if (!fogRGB || Math.abs(fogRGB[0] - hz[0]) + Math.abs(fogRGB[1] - hz[1]) + Math.abs(fogRGB[2] - hz[2]) >= 3) {
+        fogRGB = hz.slice();
+        const x = fogCol.x;
+        x.globalCompositeOperation = 'source-over';
+        x.clearRect(0, 0, TW, FOG_H); x.drawImage(fogMask, 0, 0);
+        x.globalCompositeOperation = 'source-in';
+        x.fillStyle = e.haze; x.fillRect(0, 0, TW, FOG_H);
+        x.globalCompositeOperation = 'source-over';
+      }
+      const tgt = 0.05 + 0.07 * e.night + (e.phase === 'dawn' ? 0.09 : 0) + (e.phase === 'dusk' ? 0.02 : 0);
+      fogA = fogA < 0 ? tgt : fogA + (tgt - fogA) * Math.min(1, dt * 0.4);
+      fogOff += dt * (3 + 5 * e.wind);
+    },
+    drawParallax(ctx) {
+      if (!MOUNT) return;
+      drawTiled(ctx, MOUNT.cols[0].c, MOUNT.f, MOUNT.y0, MOUNT.h);
+      drawTiled(ctx, HILLS.cols[0].c, HILLS.f, HILLS.y0, HILLS.h);
+      drawTiled(ctx, FARTREES.cols[0].c, FARTREES.f, FARTREES.y0, FARTREES.h);
+      // Juncos: cada trozo de CW px con su frame según la ráfaga que pasa por él.
+      const s = K.sx(0, REEDS.f);
+      for (let x = U.mod(s, TW) - TW; x < W; x += TW) {
+        for (let k = 0; k < TW; k += CW) {
+          const dx = x + k;
+          if (dx + CW <= 0 || dx >= W) continue;
+          ctx.drawImage(REEDS.cols[frame3(dx - s, 0)].c, k, 0, CW, REEDS.h, dx, REEDS.y0, CW, REEDS.h);
+        }
+      }
+    },
+    drawGround(ctx) {
+      if (!ground) return;
+      ctx.drawImage(ground, K.camXi - GX0, 0, W, GH, 0, GT, W, GH);
+    },
+    drawBack(ctx) {
+      if (!ground) return;
+      drawList(ctx, backTrees, 70, drawTree(ctx));
+      drawList(ctx, frontTrees, 70, drawTree(ctx));
+      drawList(ctx, bushes, 20, (b, sx) => U.draw(ctx, b.v, sx - (b.v.w >> 1), GY + 2 - b.v.h, b.flip ? -1 : 1));
+      drawList(ctx, tufts, 16, drawTuft(ctx, GY + 1));
+    },
+    drawFront(ctx) {
+      if (!ground) return;
+      ctx.drawImage(fringe, K.camXi - GX0, 0, W, FH, 0, FT, W, FH);
+      drawList(ctx, shore, 16, drawTuft(ctx, K.WATER_Y - 1));
+      drawList(ctx, fronts, 12, drawTuft(ctx, GY + 5));
+    },
+    drawOverlay(ctx) {
+      if (!fogCol || fogA <= 0.003) return;
+      ctx.globalAlpha = fogA;
+      drawTiled(ctx, fogCol.c, 1.5, FOG_Y, FOG_H);
+      ctx.globalAlpha = 1;
+    },
+  });
+
+  // Vista de depuración: ?view=world_sprites (variantes de árbol, matas y juncos sobre fondo liso).
+  K.views.world_sprites = (ctx) => {
+    if (!backTrees.length) return;
+    const seen = new Set();
+    let x = 4;
+    for (const t of [...frontTrees, ...backTrees]) { if (seen.has(t.v)) continue; seen.add(t.v); ctx.drawImage(t.v.r[0], x, 4); x += t.v.w - 20; if (x > W - 60) break; }
+    x = 4;
+    const seenT = new Set();
+    for (const t of [...tufts, ...fronts, ...shore]) { if (seenT.has(t.v)) continue; seenT.add(t.v); ctx.drawImage(t.v.f[0], x, 240 - t.v.h); x += t.v.w + 2; if (x > W - 20) break; }
+  };
+})(window.K);
+
+</script>
+<script>
+/* src/11_props.js */
+// 11_props.js — edificios y fauna: portal, campamento de vagabundos, muros, torres, granja con arroyo,
+// centro (fogata, estandarte, tiendas, antorchas), estatua, muelle y conejos.
+// Todos los sprites se pre-renderizan en init(); por frame solo se eligen frames y se copian.
+(function (K) {
+  const U = K.util;
+  const GY = K.GROUND_Y, WY = K.WATER_Y;
+
+  // ------------------------------------------------------------------ lienzo de píxeles
+  // Buffer de colores hex con operaciones enteras; se vuelca a un sprite {r, l, w, h}.
+  class Pix {
+    constructor(w, h) { this.w = w; this.h = h; this.d = new Array(w * h).fill(null); }
+    in(x, y) { return x >= 0 && y >= 0 && x < this.w && y < this.h; }
+    set(x, y, c) { x = Math.round(x); y = Math.round(y); if (c && this.in(x, y)) this.d[y * this.w + x] = c; }
+    clr(x, y) { x = Math.round(x); y = Math.round(y); if (this.in(x, y)) this.d[y * this.w + x] = null; }
+    get(x, y) { x = Math.round(x); y = Math.round(y); return this.in(x, y) ? this.d[y * this.w + x] : null; }
+    rect(x, y, w, h, c) { for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) this.set(x + i, y + j, c); }
+    line(x0, y0, x1, y1, c) {
+      x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+      const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+      let e = dx + dy;
+      for (;;) {
+        this.set(x0, y0, c);
+        if (x0 === x1 && y0 === y1) break;
+        const e2 = 2 * e;
+        if (e2 >= dy) { e += dy; x0 += sx; }
+        if (e2 <= dx) { e += dx; y0 += sy; }
+      }
+    }
+    // Elipse rellena con color por fila: fn(dy, ry) → color (permite luz arriba y sombra abajo).
+    blob(cx, cy, rx, ry, fn) {
+      for (let dy = -ry; dy <= ry; dy++) {
+        const hw = Math.floor(rx * Math.sqrt(Math.max(0, 1 - (dy * dy) / (ry * ry + 0.01))) + 0.5);
+        for (let dx = -hw; dx <= hw; dx++) this.set(cx + dx, cy + dy, typeof fn === 'function' ? fn(dx, dy, hw) : fn);
+      }
+    }
+    // Estampa una matriz de caracteres (misma convención que U.sprite).
+    rows(x, y, rows, pal, name = 'rows') {
+      rows.forEach((r, j) => {
+        for (let i = 0; i < r.length; i++) {
+          const ch = r[i];
+          if (ch === '.' || ch === ' ') continue;
+          if (!pal[ch]) throw new Error(`${name}: el carácter '${ch}' no tiene color`);
+          this.set(x + i, y + j, pal[ch]);
+        }
+      });
+    }
+    canvas() {
+      const { c, x } = U.canvas(this.w, this.h);
+      const img = x.createImageData(this.w, this.h), d = img.data;
+      for (let i = 0; i < this.d.length; i++) {
+        const col = this.d[i];
+        if (!col) continue;
+        const [r, g, b] = U.rgb(col);
+        d[i * 4] = r; d[i * 4 + 1] = g; d[i * 4 + 2] = b; d[i * 4 + 3] = 255;
+      }
+      x.putImageData(img, 0, 0);
+      return c;
+    }
+    sprite() { return U.withFlip(this.canvas()); }
+  }
+
+  // ------------------------------------------------------------------ paletas (0 grieta … 5 brillo)
+  const C = {
+    wood:  ['#2C2019', '#3E2C20', '#553D2A', '#6E5036', '#8A6746', '#A5825A'],
+    stone: ['#393D34', '#4A4F43', '#5C6154', '#737868', '#8B8F7F', '#A3A695'],
+    black: ['#0F0F13', '#18171D', '#212026', '#2C2B33', '#393842', '#4A4853'],
+    moss:  ['#3F4320', '#555A2A', '#6E7338', '#8A9046', '#ADA955'],
+    straw: ['#5E5033', '#7E6C45', '#9E8A5A', '#BCA672', '#D4C08C'],
+    cloth: ['#3F392F', '#575042', '#716853', '#8C8268', '#A69C7F'],
+    iron:  ['#28272A', '#3C3A3B', '#57544F', '#7A766D', '#99958A'],
+    fire:  ['#C9482A', '#EE7630', '#FFAA45', '#FFD873', '#FFF3C8'],
+    soil:  ['#3A281A', '#4A3322', '#5E4229', '#7A5836', '#94704A'],
+  };
+
+  // ------------------------------------------------------------------ utilidades de construcción
+  // Piedras: celdas de Voronoi en hileras trabadas; grieta entre celdas, luz arriba y sombra abajo.
+  // pal = [grieta, muy oscuro, oscuro, base, claro, brillo]. shade(x, y) oscurece un tono (lado en sombra).
+  function stoneFill(p, inside, pal, o) {
+    const rr = U.mulberry32(o.seed), cw = o.cw, ch = o.ch, ax = ch / cw;
+    const pts = [];
+    for (let gy = -1; gy * ch < p.h + ch; gy++) {
+      const off = (gy & 1) ? cw / 2 : 0;
+      for (let gx = -1; gx * cw < p.w + cw; gx++) {
+        pts.push([gx * cw + off + (rr() - 0.5) * cw * 0.55, gy * ch + ch / 2 + (rr() - 0.5) * ch * 0.45, rr()]);
+      }
+    }
+    const id = new Int32Array(p.w * p.h).fill(-2);
+    for (let y = 0; y < p.h; y++) for (let x = 0; x < p.w; x++) {
+      if (!inside(x, y)) continue;
+      let d1 = 1e9, d2 = 1e9, i1 = -1;
+      for (let i = 0; i < pts.length; i++) {
+        const dx = (x - pts[i][0]) * ax, dy = y - pts[i][1], d = dx * dx + dy * dy;
+        if (d < d1) { d2 = d1; d1 = d; i1 = i; } else if (d < d2) d2 = d;
+      }
+      id[y * p.w + x] = Math.sqrt(d2) - Math.sqrt(d1) < (o.gap || 0.9) ? -1 : i1;
+    }
+    for (let y = 0; y < p.h; y++) for (let x = 0; x < p.w; x++) {
+      const i = id[y * p.w + x];
+      if (i === -2) continue;
+      if (i === -1) { p.set(x, y, pal[0]); continue; }
+      const t = pts[i][2];
+      let k = t < 0.3 ? 2 : t < 0.8 ? 3 : 4;
+      const up = y === 0 || id[(y - 1) * p.w + x] !== i;
+      const dn = y === p.h - 1 || id[(y + 1) * p.w + x] !== i;
+      if (up) k += 1; else if (dn) k -= 1;
+      if (o.shade && o.shade(x, y)) k -= 1;
+      p.set(x, y, pal[U.clamp(k, 1, 5)]);
+    }
+    return id;
+  }
+
+  // Musgo: cae desde las superficies que miran arriba y forma parches con ruido.
+  function mossOver(p, seed, amount = 1, patches = 0.62) {
+    const m = C.moss, orig = p.d.slice();
+    const solid = (x, y) => p.in(x, y) && orig[y * p.w + x] !== null;
+    for (let x = 0; x < p.w; x++) {
+      for (let y = 0; y < p.h; y++) {
+        if (!solid(x, y) || solid(x, y - 1)) continue;
+        // superficie superior: gotea hacia abajo 1–4 px
+        const len = Math.round((1 + U.noise1(x * 0.7, seed) * 3.5) * amount);
+        for (let k = 0; k < len; k++) if (solid(x, y + k)) p.set(x, y + k, k === 0 ? m[4] : k === len - 1 ? m[1] : k === 1 ? m[3] : m[2]);
+      }
+    }
+    if (patches < 1) {
+      for (let y = 0; y < p.h; y++) for (let x = 0; x < p.w; x++) {
+        if (!solid(x, y)) continue;
+        const n = U.fbm2(x * 0.18, y * 0.22, 3, seed + 5);
+        if (n > patches) p.set(x, y, n > patches + 0.08 ? (solid(x, y - 1) && n > patches + 0.14 ? m[2] : m[3]) : m[1]);
+      }
+    }
+  }
+
+  // Llama en bucle: capas anidadas (fuera → dentro) con lenguas que oscilan y pavesas que se desprenden.
+  // tongues: [x (−1..1), alto (0..1), ancho, fase, vaivén].
+  function flameFrames(w, h, n, o) {
+    const out = [], cx = (w - 1) / 2, cols = o.cols || C.fire, L = cols.length;
+    for (let f = 0; f < n; f++) {
+      const p = new Pix(w, h), ph = (f / n) * Math.PI * 2;
+      const tg = o.tongues.map((t) => ({ x: t[0] + Math.sin(ph + t[3]) * t[4], h: t[1] * (0.8 + 0.2 * Math.sin(ph * 2 + t[3] * 1.7)), w: t[2] }));
+      const top = (dx) => {
+        let m = 0;
+        for (const t of tg) { const k = 1 - Math.abs(dx - t.x) / t.w; if (k > 0) m = Math.max(m, t.h * Math.pow(k, 0.6)); }
+        return m;
+      };
+      for (let l = 0; l < L; l++) {
+        const s = 1 - (l / L) * 0.82, hw = o.halfW * s;
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+          const dx = (x - cx) / hw;
+          if (dx <= -1 || dx >= 1) continue;
+          const up = (h - 1 - y) / (h - 1);
+          if (up < o.round * s * (1 - Math.sqrt(1 - dx * dx))) continue;
+          if (up <= top(dx) * Math.pow(s, 1.15)) p.set(x, y, cols[l]);
+        }
+      }
+      for (const b of o.bits || []) {
+        const u = (f / n + b[2]) % 1;
+        if (u > 0.8) continue;
+        const y = Math.round((h - 1) * (1 - (b[1] + u * (1 - b[1]))));
+        const x = Math.round(cx + b[0] * o.halfW + Math.sin(u * 6 + b[2] * 9));
+        p.set(x, y, cols[u < 0.3 ? 2 : u < 0.55 ? 1 : 0]);
+      }
+      out.push(p.sprite());
+    }
+    return out;
+  }
+
+  // ------------------------------------------------------------------ sprites
+  const S = {};
+
+  function buildPortal() {
+    const W = 48, H = 58, cx = 23.5, p = new Pix(W, H);
+    const outerTop = (x) => {
+      const dx = (x - cx) / 19.5;
+      if (Math.abs(dx) > 1) return 1e9;
+      let t = 3 + 17 * (1 - Math.sqrt(1 - dx * dx));
+      t += (U.noise1(x * 0.55, 31) - 0.5) * 6 + (U.hash(x, 1, 7) < 0.12 ? -2 : 0);
+      return Math.round(t);
+    };
+    const inner = (x, y) => {
+      const dx = (x - cx) / 10.2;
+      if (Math.abs(dx) >= 1 || y >= H - 3) return false;
+      return y >= 20 + 10 * (1 - Math.sqrt(1 - dx * dx));
+    };
+    // escombros en la base, a ambos lados
+    const rubble = (x, y) => {
+      const a = ((x - 3) / 4.5) ** 2 + ((y - (H - 2)) / 4) ** 2 < 1;
+      const b = ((x - (W - 4)) / 4) ** 2 + ((y - (H - 2)) / 3.5) ** 2 < 1;
+      const c = ((x - 8) / 3) ** 2 + ((y - (H - 1)) / 2.5) ** 2 < 1;
+      return a || b || c;
+    };
+    const ring = (x, y) => (y >= outerTop(x) && !inner(x, y)) || rubble(x, y);
+    stoneFill(p, ring, C.black, { seed: 12, cw: 8, ch: 5, gap: 0.85, shade: (x) => x > W * 0.62 });
+    // borde interior teñido por el remolino
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      if (!ring(x, y) || inner(x, y)) continue;
+      const n1 = inner(x - 1, y) || inner(x + 1, y) || inner(x, y + 1);
+      const n2 = !n1 && (inner(x - 2, y) || inner(x + 2, y) || inner(x, y + 2));
+      if (n1) p.set(x, y, '#3A2750');
+      else if (n2 && U.hash(x, y, 3) < 0.5) p.set(x, y, '#2B2136');
+    }
+    S.portal = p.sprite();
+    // remolino violáceo (8 frames)
+    S.portalSwirl = [];
+    const cols = ['#110A18', '#1B0F27', '#291638', '#3B1F52', '#54306F', '#7A4E9A'];
+    for (let f = 0; f < 8; f++) {
+      const q = new Pix(W, H), ph = (f / 8) * Math.PI * 2;
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        if (!inner(x, y)) continue;
+        const dx = x - cx, dy = (y - 38) * 0.7, r = Math.hypot(dx, dy), a = Math.atan2(dy, dx);
+        const v = Math.sin(a * 2 - r * 0.6 + ph) * 0.5 + 0.5;
+        const k = v * 0.62 + U.clamp(r / 13, 0, 1) * 0.5 - 0.12;
+        q.set(x, y, cols[U.clamp(Math.floor(k * 5), 0, 4)]);
+      }
+      // motas que orbitan
+      for (let i = 0; i < 5; i++) {
+        const a = i * 1.26 + ph, r = 4 + i * 1.6;
+        const x = Math.round(cx + Math.cos(a) * r), y = Math.round(38 + (Math.sin(a) * r) / 0.7);
+        if (inner(x, y)) q.set(x, y, cols[5]);
+      }
+      S.portalSwirl.push(q.sprite());
+    }
+  }
+
+  function buildTorch() {
+    const p = new Pix(16, 32), w = C.wood;
+    for (let y = 13; y < 32; y++) { p.set(7, y, w[4]); p.set(8, y, w[2]); }
+    // ataduras de cuerda
+    p.set(7, 17, C.straw[3]); p.set(8, 17, C.straw[1]); p.set(7, 18, C.straw[2]); p.set(8, 18, C.straw[1]);
+    // cazoleta de hierro
+    p.rect(5, 10, 6, 1, C.iron[3]); p.set(5, 10, C.iron[4]);
+    p.rect(5, 11, 6, 1, C.iron[2]); p.rect(6, 12, 4, 1, C.iron[1]);
+    p.set(5, 11, C.iron[3]); p.set(10, 11, C.iron[1]);
+    S.torch = p.sprite();
+    S.torchFlame = flameFrames(10, 14, 8, {
+      halfW: 3.6, round: 0.22,
+      tongues: [[0, 1, 1.1, 0, 0.16], [-0.45, 0.62, 0.6, 2.1, 0.1], [0.45, 0.55, 0.55, 4.2, 0.12]],
+      bits: [[0.15, 0.7, 0.2], [-0.2, 0.75, 0.65]],
+      cols: ['#D9562C', '#F58A36', '#FFC257', '#FFEBA6'],
+    });
+  }
+
+  function buildCampfire() {
+    // base: piedras del fondo + troncos (detrás de la llama) y piedras delanteras (delante)
+    const W = 38, H = 16, back = new Pix(W, H), front = new Pix(W, H), st = C.stone, w = C.wood;
+    const rock = (p, cx, cy, rx, ry) => p.blob(cx, cy, rx, ry, (dx, dy) => (dy <= -ry + 0 ? st[5] : dy < 0 ? st[4] : dy < ry ? st[3] : st[2]));
+    // piedras del fondo (asoman tras los troncos)
+    [[7, 8], [13, 6], [19, 6], [25, 6], [31, 8]].forEach(([x, y]) => rock(back, x, y, 3, 2));
+    // troncos en tipi
+    const log = (x0, y0, x1, y1) => {
+      back.line(x0, y0, x1, y1, w[2]); back.line(x0 + 1, y0, x1 + 1, y1, w[3]);
+      back.set(x1, y1, '#2A2220'); back.set(x1 + 1, y1, '#3A2A22');
+    };
+    log(8, 14, 16, 3); log(28, 14, 20, 3); log(12, 15, 18, 2); log(24, 15, 19, 1);
+    back.line(4, 14, 33, 13, w[1]); back.line(4, 15, 33, 14, w[3]);
+    // brasas
+    for (let x = 11; x < 28; x++) if (U.hash(x, 2, 9) < 0.7) back.set(x, 12 + (x & 1), U.hash(x, 3, 9) < 0.5 ? '#E8732C' : '#A8401F');
+    // piedras delanteras
+    [[3, 13], [9, 14], [15, 14], [21, 14], [27, 14], [33, 13]].forEach(([x, y], i) => rock(front, x, y, 3 - (i === 0 || i === 5 ? 1 : 0), 2));
+    S.fireBack = back.sprite(); S.fireFront = front.sprite();
+    S.fireFlame = flameFrames(26, 40, 8, {
+      halfW: 11, round: 0.12,
+      tongues: [[0, 1, 0.75, 0, 0.1], [-0.45, 0.6, 0.55, 2.1, 0.12], [0.5, 0.66, 0.5, 4.2, 0.12], [-0.18, 0.82, 0.45, 1.3, 0.14], [0.26, 0.74, 0.45, 3.3, 0.14]],
+      bits: [[-0.25, 0.7, 0.1], [0.3, 0.62, 0.55], [0.05, 0.82, 0.8], [-0.4, 0.5, 0.35]],
+    });
+    // fogata pequeña del campamento
+    const sb = new Pix(20, 9), sf = new Pix(20, 9);
+    [[5, 5], [10, 4], [15, 5]].forEach(([x, y]) => sb.blob(x, y, 2, 1, (dx, dy) => (dy < 0 ? st[4] : st[3])));
+    sb.line(4, 7, 11, 2, w[2]); sb.line(5, 7, 12, 2, w[3]); sb.line(15, 7, 9, 2, w[2]); sb.line(16, 7, 10, 2, w[3]);
+    for (let x = 6; x < 15; x++) if (U.hash(x, 4, 9) < 0.7) sb.set(x, 6 + (x & 1), U.hash(x, 5, 9) < 0.5 ? '#E8732C' : '#A8401F');
+    [[2, 7], [7, 8], [12, 8], [17, 7]].forEach(([x, y]) => sf.blob(x, y, 2, 1, (dx, dy) => (dy < 0 ? st[4] : dy === 0 ? st[3] : st[2])));
+    S.campBack = sb.sprite(); S.campFront = sf.sprite();
+    S.campFlame = flameFrames(14, 20, 8, {
+      halfW: 5.5, round: 0.15,
+      tongues: [[0, 1, 0.9, 0.5, 0.14], [-0.45, 0.6, 0.55, 2.4, 0.12], [0.45, 0.7, 0.5, 4.6, 0.12]],
+      bits: [[0.1, 0.7, 0.3], [-0.25, 0.6, 0.75]],
+    });
+  }
+
+  function buildTent() {
+    const W = 30, H = 21, p = new Pix(W, H), c = C.cloth, cx = 14, ay = 3;
+    for (let y = ay; y < H; y++) {
+      const k = (y - ay) / (H - 1 - ay), hw = Math.round(1 + 13 * Math.pow(k, 0.85));
+      for (let x = cx - hw; x <= cx + hw + 1; x++) {
+        const left = x <= cx;
+        let col = left ? c[3] : c[1];
+        if (y > ay + 2) {
+          if (left && U.mod(x - cx + Math.round(k * 6), 6) === 0) col = c[2];
+          if (!left && U.mod(x - cx - Math.round(k * 5), 7) === 0) col = c[0];
+        }
+        if (y === ay || (left && x === cx - hw)) col = left ? c[4] : c[2];
+        p.set(x, y, col);
+      }
+    }
+    // entrada oscura con el borde de la solapa iluminado
+    for (let y = 9; y < H; y++) {
+      const hw = Math.round((y - 9) * 0.42);
+      for (let x = cx - hw; x <= cx + hw + 1; x++) p.set(x, y, y < 11 ? '#2E271F' : '#211B15');
+      p.set(cx - hw - 1, y, c[4]);
+    }
+    // remiendos con puntadas
+    p.rect(4, 13, 4, 3, '#7C604A'); p.rect(4, 13, 4, 1, '#94765C');
+    [[3, 13], [3, 15], [8, 14], [5, 16]].forEach(([x, y]) => p.set(x, y, c[4]));
+    p.rect(20, 10, 3, 3, '#5E6848'); p.rect(20, 10, 3, 1, '#727D58');
+    p.set(23, 11, c[3]); p.set(19, 12, c[3]);
+    p.rect(24, 16, 3, 2, '#6A5A48');
+    // palos cruzados en la cumbrera
+    p.line(cx, ay + 1, cx - 3, 0, C.wood[4]); p.line(cx + 1, ay + 1, cx + 4, 0, C.wood[2]);
+    // borde inferior deshilachado
+    for (let x = 0; x < W; x++) if (U.hash(x, 5, 3) < 0.3) p.clr(x, H - 1);
+    S.tent = p.sprite();
+  }
+
+  // Vagabundos (miran a la derecha), 2 frames de reposo cada uno.
+  const VPAL = {
+    h: '#352E28', H: '#4E453D', s: '#C8A286', S: '#A07E66', e: '#2B2521',
+    C: '#877E6B', c: '#6A6354', d: '#4E493F', D: '#3A3630', p: '#7A5E4A', l: '#473E36', f: '#2F2923',
+  };
+  const VSTAND = [
+    '...hhh...',
+    '..hHHhh..',
+    '..hHsss..',
+    '..hhses..',
+    '..hSsss..',
+    '...dSS...',
+    '..cCCcd..',
+    '.cCCCccd.',
+    '.cCCcccd.',
+    '.cCcccdd.',
+    '.cCcpcdd.',
+    '.ccppcdS.',
+    '.cccccds.',
+    '.ccccddd.',
+    '..cccddD.',
+    '..c.cd.d.',
+    '...l..l..',
+    '...l..l..',
+    '...l..l..',
+    '..ff.ff..',
+  ];
+  const VSIT = [
+    '...hhh......',
+    '..hHHhh.....',
+    '..hHsss.....',
+    '..hhses.....',
+    '..hSsss.....',
+    '..cdSS......',
+    '.cCCccd.....',
+    '.cCCcccdSs..',
+    '.cCcccdd....',
+    '.ccpccllll..',
+    '.cccddlllll.',
+    '..cdD...l.l.',
+    '........f.ff',
+  ];
+  function buildVagrants() {
+    const stand2 = ['.........'].concat(VSTAND.slice(0, 7), VSTAND.slice(8));
+    const sit2 = VSIT.slice(); sit2[6] = '.cCCccdSs...'; sit2[7] = '.cCCcccd....';
+    const mk = (rows, name) => { const p = new Pix(rows[0].length, rows.length); p.rows(0, 0, rows, VPAL, name); return p.sprite(); };
+    S.vagStand = [mk(VSTAND, 'vagStand'), mk(stand2, 'vagStand2')];
+    S.vagSit = [mk(VSIT, 'vagSit'), mk(sit2, 'vagSit2')];
+    const lg = new Pix(10, 4), w = C.wood;
+    lg.rect(1, 0, 8, 1, w[4]); lg.rect(0, 1, 10, 2, w[3]); lg.rect(1, 3, 8, 1, w[2]);
+    lg.set(0, 1, '#9C8466'); lg.set(0, 2, '#7E6A50'); lg.set(9, 1, w[2]);
+    S.seatLog = lg.sprite();
+  }
+
+  // Arquero (mira a la derecha): solo asoma sobre el parapeto de la torre.
+  const APAL = {
+    g: '#56643A', G: '#6F7E48', q: '#3F4A2A', s: '#C8A286', S: '#A07E66', e: '#2B2521',
+    b: '#6E4C30', B: '#8E6A44', w: '#CFC6AE',
+  };
+  const ARCHER = [
+    '...ggg....',
+    '..gGGGg...',
+    '..gGsss...',
+    '..gGses.B.',
+    '..qgsss.wb',
+    '..qgSS..wb',
+    '.qgGGgSssb',
+    '.qgGGGg.wb',
+    '.qgGGGg.wb',
+    '.qgGGgg.B.',
+    '.qgggggg..',
+    '.qqgggqq..',
+  ];
+  function buildTower(frame) {
+    const W = 28, H = 62, p = new Pix(W, H), w = C.wood, top = 22;
+    // patas traseras y tirantes (en sombra)
+    for (let y = top; y < H; y++) { p.set(8, y, w[1]); p.set(9, y, w[2]); p.set(18, y, w[1]); p.set(19, y, w[2]); }
+    const brace = (x0, y0, x1, y1) => { p.line(x0, y0, x1, y1, w[2]); p.line(x0, y0 + 1, x1, y1 + 1, w[1]); };
+    brace(4, top + 4, 23, top + 18); brace(23, top + 4, 4, top + 18);
+    brace(4, top + 21, 23, top + 36); brace(23, top + 21, 4, top + 36);
+    // travesaños
+    p.rect(3, top + 19, 22, 1, w[4]); p.rect(3, top + 20, 22, 1, w[2]);
+    // patas delanteras, abiertas hacia el suelo
+    for (let y = top; y < H; y++) {
+      const o = Math.round(((y - top) / (H - top)) * 2);
+      [[2 - o, 0], [23 + o, 1]].forEach(([x]) => { p.set(x, y, w[4]); p.set(x + 1, y, w[3]); p.set(x + 2, y, w[2]); });
+    }
+    // arquero detrás del parapeto
+    const a = frame ? ['..........'].concat(ARCHER.slice(0, 11)) : ARCHER;
+    p.rows(9, top - 17, a, APAL, 'archer');
+    // parapeto de tablas con puntas
+    for (let i = 0; i < 9; i++) {
+      const x = 1 + i * 3, h = 8 + (i & 1);
+      for (let y = top - 2 - h; y < top - 1; y++) { p.set(x, y, w[4]); p.set(x + 1, y, w[3]); p.set(x + 2, y, w[2]); }
+      p.clr(x, top - 2 - h); p.clr(x + 2, top - 2 - h);
+      p.set(x + 1, top - 2 - h, w[5]);
+    }
+    p.rect(0, top - 6, W, 1, w[2]); p.rect(0, top - 5, W, 1, w[1]);
+    // plataforma de canto
+    p.rect(0, top - 1, W, 1, w[5]); p.rect(0, top, W, 1, w[3]); p.rect(0, top + 1, W, 1, w[1]);
+    for (let x = 3; x < W; x += 5) p.set(x, top, w[2]);
+    return p.sprite();
+  }
+
+  function buildWoodWall() {
+    const W = 18, H = 30, p = new Pix(W, H), w = C.wood;
+    const hs = [25, 28, 26, 29, 24];
+    hs.forEach((h, i) => {
+      const x = 1 + i * 3;
+      for (let y = H - h; y < H; y++) { p.set(x, y, w[4]); p.set(x + 1, y, w[3]); p.set(x + 2, y, w[2]); }
+      p.clr(x, H - h); p.clr(x + 2, H - h); p.set(x + 1, H - h, w[5]);
+      p.set(x + 2, H - h + 1, w[3]);
+    });
+    // dos travesaños atados
+    [9, 19].forEach((y) => { p.rect(0, y, W, 1, w[5]); p.rect(0, y + 1, W, 1, w[2]); p.set(0, y + 1, w[3]); });
+    // montículo de tierra
+    p.rect(0, H - 2, W, 1, C.soil[3]); p.rect(0, H - 1, W, 1, C.soil[2]);
+    S.woodWall = p.sprite();
+  }
+
+  // Muro defensivo de piedra (26×60, cima en y≈112): lienzo recto de 12 hiladas, cordón saliente bajo
+  // tres merlones y zócalo; más alto que la corona del jinete (≈128).
+  function buildStoneWall(seed) {
+    const W = 26, H = 60, p = new Pix(W, H), cx = (W - 1) / 2, st = C.stone;
+    const CORD = 7, PLINTH = H - 4;
+    const inside = (x, y) => {
+      const dx = Math.abs(x - cx);
+      if (y >= PLINTH || (y >= CORD && y < CORD + 3)) return dx <= 12.5; // zócalo y cordón (26 px)
+      if (dx > 11.5) return false;                                       // lienzo (24 px)
+      if (y < 4) { const u = x - 1; return u % 9 < 6; }                   // merlones de 6 con troneras de 3
+      return true;
+    };
+    stoneFill(p, inside, st, { seed, cw: 7, ch: 5, gap: 0.8, shade: (x) => x > W * 0.64 });
+    // cordón y zócalo: arista iluminada arriba y sombra que arrojan sobre el lienzo
+    for (let x = 0; x < W; x++) {
+      const dark = x > W * 0.64 ? 1 : 0;
+      if (p.get(x, CORD)) p.set(x, CORD, st[5 - dark]);
+      if (p.get(x, PLINTH)) p.set(x, PLINTH, st[4 - dark]);
+      if (x >= 1 && x < W - 1) p.set(x, CORD + 3, st[1]);
+    }
+    mossOver(p, seed + 3, 1, 0.68);
+    return p.sprite();
+  }
+
+  // Tiendas: tejadillo de paja, pared trasera en sombra, mostrador y cartel con pictograma.
+  // Tienda (36×57): tejado de paja de 14 filas cuyo alero queda por encima de la corona del jinete
+  // (y≈128); debajo, cartel, mercancía colgada de una barra y mostrador a la altura de la cintura.
+  function buildShop(kind) {
+    const W = 36, H = 57, p = new Pix(W, H), w = C.wood, s = C.straw, mid = W / 2;
+    const eave = 13;                  // fila del flequillo del alero
+    // pared del fondo (en sombra)
+    for (let y = eave + 1; y < H - 1; y++) for (let x = 5; x < W - 5; x++) p.set(x, y, (x % 5 === 0) ? w[1] : w[2]);
+    // sombra del alero sobre la pared
+    for (let x = 5; x < W - 5; x++) { p.set(x, eave + 1, w[0]); if (U.hash(x, 2, 6) < 0.5) p.set(x, eave + 2, w[1]); }
+    // postes
+    for (let y = eave - 2; y < H; y++) { p.set(2, y, w[4]); p.set(3, y, w[2]); p.set(W - 4, y, w[4]); p.set(W - 3, y, w[2]); }
+    // barra de la mercancía y mercancía colgada
+    const railY = eave + 12;
+    p.rect(4, railY, W - 8, 1, w[3]);
+    if (kind === 'hammer') {
+      [8, 16, 24].forEach((x, i) => {
+        const y = railY + 1 + (i === 1 ? 1 : 0);
+        p.rect(x, y, 4, 2, C.iron[3]); p.rect(x, y, 4, 1, C.iron[4]); p.set(x + 3, y + 1, C.iron[2]);
+        for (let k = 2; k < 8; k++) p.set(x + 1, y + k, w[5]);
+      });
+    } else {
+      [9, 17, 25].forEach((x, i) => {
+        const y = railY + 1 + (i === 1 ? 1 : 0);
+        for (let k = 0; k < 11; k++) { const dx = Math.round(Math.sin((k / 10) * Math.PI) * 2); p.set(x - dx, y + k, w[4]); }
+        for (let k = 0; k < 11; k++) p.set(x + 1, y + k, '#CFC6AE');
+      });
+    }
+    // mostrador
+    const cy = H - 14;
+    p.rect(3, cy, W - 6, 1, w[5]); p.rect(3, cy + 1, W - 6, 1, w[3]);
+    for (let y = cy + 2; y < H; y++) for (let x = 4; x < W - 4; x++) p.set(x, y, ((y - cy) % 4 === 1) ? w[2] : (x < mid ? w[4] : w[3]));
+    for (let y = cy + 2; y < H; y++) p.set(4, y, w[3]);
+    if (kind === 'hammer') {
+      // yunque sobre el mostrador
+      p.rect(9, cy - 3, 7, 1, C.iron[4]); p.rect(10, cy - 2, 5, 1, C.iron[2]); p.rect(11, cy - 1, 3, 1, C.iron[1]);
+      p.set(8, cy - 3, C.iron[3]);
+    } else {
+      // carcaj con flechas
+      p.rect(27, cy - 5, 3, 5, '#6A4A34'); p.rect(27, cy - 5, 1, 5, '#84603F');
+      [27, 28, 29].forEach((x, i) => { p.set(x, cy - 6 - (i & 1), '#D8D0B8'); p.set(x, cy - 7 - (i & 1), '#B7432F'); });
+    }
+    // tejado de paja a dos aguas (caballete arriba, alero deshilachado abajo)
+    for (let y = 0; y <= eave; y++) {
+      const hw = Math.min(mid, Math.round(4 + y * 1.2));
+      for (let x = mid - hw; x < mid + hw; x++) {
+        const strand = U.hash(x, Math.floor(y / 3), kind === 'hammer' ? 1 : 2), left = x < mid;
+        let col = left ? (strand < 0.5 ? s[3] : s[2]) : (strand < 0.5 ? s[2] : s[1]);
+        if (y === eave) col = U.hash(x, 9, 4) < 0.35 ? null : s[0];
+        else if (y === eave - 1) col = s[1];
+        else if (left && x === mid - hw) col = s[4];
+        if (y <= 1 && Math.abs(x - (mid - 0.5)) < 4) col = s[4];
+        if (col) p.set(x, y, col);
+      }
+    }
+    // cartel colgado del alero
+    const bx = mid - 6, by = eave + 1;
+    p.set(bx + 2, by, w[1]); p.set(bx + 9, by, w[1]);
+    p.rect(bx, by + 1, 12, 8, w[4]); p.rect(bx + 1, by + 2, 10, 6, w[3]); p.rect(bx, by + 8, 12, 1, w[2]);
+    const ink = '#E8DDBC';
+    if (kind === 'hammer') {
+      p.rect(bx + 3, by + 3, 6, 2, ink); p.rect(bx + 5, by + 5, 2, 3, ink);
+    } else {
+      [[4, 2], [3, 3], [3, 4], [3, 5], [4, 6]].forEach(([x, y]) => p.set(bx + x, by + y, ink));
+      for (let y = 2; y < 7; y++) p.set(bx + 6, by + y, ink);
+      p.rect(bx + 3, by + 4, 6, 1, ink); p.set(bx + 8, by + 3, ink); p.set(bx + 8, by + 5, ink);
+    }
+    return p.sprite();
+  }
+
+  // Estandarte: mástil de 60 px con travesaño y un paño vertical colgante (13×24, cola de golondrina)
+  // del color de la capa, con una corona de 3 puntas centrada. 3 niveles de viento × 4 frames.
+  const BANNER = { PH: 60, PC: 8, TOP: 6, BW: 13, BH: 24, LEAN: 7 };
+  function buildBanner() {
+    const [col, sh] = K.royal.cape, w = C.wood, { PH, PC, BW, BH, LEAN } = BANNER;
+    const gold = '#EB9B36', goldL = '#F7C46A', goldD = '#B8742A';
+    const pole = new Pix(PC * 2 + 1, PH);
+    for (let y = 3; y < PH; y++) { pole.set(PC - 1, y, w[4]); pole.set(PC, y, w[3]); pole.set(PC + 1, y, w[2]); }
+    // remate dorado
+    pole.set(PC, 0, goldL);
+    pole.set(PC - 1, 1, gold); pole.set(PC, 1, goldL); pole.set(PC + 1, 1, goldD);
+    pole.set(PC - 1, 2, gold); pole.set(PC, 2, gold); pole.set(PC + 1, 2, goldD);
+    // travesaño con pomos dorados
+    for (let x = 1; x < PC * 2; x++) { pole.set(x, 4, w[5]); pole.set(x, 5, w[2]); }
+    pole.set(0, 4, goldL); pole.set(0, 5, goldD); pole.set(PC * 2, 4, gold); pole.set(PC * 2, 5, goldD);
+    S.bannerPole = pole.sprite();
+    // Corona: más clara si el paño es anaranjado (el dorado se perdería).
+    const [cr, cg] = U.rgb(col), pale = cr > 150 && cg > 100;
+    const cMain = pale ? '#F4E6C0' : gold, cHi = pale ? '#FFF6DE' : goldL, cLo = pale ? '#C9B98E' : goldD;
+    const lite = U.lerpColor(col, '#FFFFFF', 0.14), dark = U.shade(sh, 0.8), mid = (BW - 1) / 2;
+    const CROWN = ['h.h.h', '#####', '#####', 'ddddd'];
+    S.banner = [0, 1, 2].map((level) => {
+      const lean = [0.3, 2.5, 5.2][level], amp = [0.6, 0.9, 1.1][level];
+      const out = [];
+      for (let f = 0; f < 4; f++) {
+        const p = new Pix(BW + LEAN + 1, BH), ph = (f / 4) * Math.PI * 2;
+        // desplazamiento de cada fila: el viento empuja la parte baja y una onda larga baja por el paño
+        const off = (v) => { const k = v / (BH - 1); return lean * Math.pow(k, 1.6) + amp * k * Math.sin(ph - v * 0.2); };
+        const notch = (u, v) => { const t = v - (BH - 6); return t > 0 && Math.abs(u - mid) < t * 0.8; };
+        for (let v = 0; v < BH; v++) {
+          const dx = Math.round(off(v));
+          for (let u = 0; u < BW; u++) {
+            if (notch(u, v)) continue;
+            // pliegues verticales (siguen la inclinación del paño) que se desplazan despacio con el viento
+            const fold = Math.sin(u * 0.9 - ph * (level ? 0.5 : 0.25) + 1.3);
+            let c = fold > 0.72 ? sh : col;
+            if (u === 0) c = lite;
+            if (u === BW - 1) c = sh;
+            if (v === 0) c = dark;                                           // doblez bajo el travesaño
+            if (v === BH - 1 || notch(u - 1, v) || notch(u + 1, v)) c = c === col || c === lite ? sh : dark; // bordes de la cola
+            p.set(u + dx, v, c);
+          }
+        }
+        CROWN.forEach((r, j) => {
+          const v = 5 + j, dx = Math.round(off(v));
+          for (let i = 0; i < 5; i++) if (r[i] !== '.') p.set(mid - 2 + i + dx, v, r[i] === 'd' ? cLo : r[i] === 'h' ? cHi : cMain);
+        });
+        out.push(p.sprite());
+      }
+      return out;
+    });
+  }
+
+  // Estatua-monumento (33×72, cima en y≈100): rey coronado de piedra que apoya las manos en la espada,
+  // sobre un pedestal de tres cuerpos (cornisa, dado de sillares y zócalo escalonado).
+  function buildStatue() {
+    const W = 33, H = 72, p = new Pix(W, H), st = C.stone, cx = 16, PT = 53;
+    const ped = (x, y) => x >= 0 && x < W && (
+      (y >= 66 && y < H) || (y >= 64 && y < 66 && x >= 1 && x < W - 1) ||
+      (y >= 56 && y < 64 && x >= 3 && x < W - 3) || (y >= PT && y < 56 && x >= 1 && x < W - 1));
+    for (let y = PT; y < H; y++) for (let x = 0; x < W; x++) {
+      if (!ped(x, y)) continue;
+      let k = 3;
+      if (!ped(x, y - 1)) k = 5; else if (!ped(x, y - 2)) k = 4;
+      if (!ped(x, y + 1) || y === 56) k = 2;                       // aristas inferiores y sombra de la cornisa
+      if (x > W * 0.66) k -= 1;
+      if (y >= 57 && y < 64 && (y === 60 || U.mod(x + (y < 60 ? 0 : 4), 8) === 0)) k = 1; // juntas del dado
+      if (y >= 67 && U.mod(x + 3, 9) === 0) k = 1;                                         // juntas del zócalo
+      p.set(x, y, st[U.clamp(k, 1, 5)]);
+    }
+    // figura
+    const body = (x, y) => {
+      const dx = x - cx;
+      if (y >= 3 && y <= 12) return (dx / 3.7) ** 2 + ((y - 7.8) / 4.8) ** 2 <= 1;   // cabeza
+      if (y === 13) return Math.abs(dx) <= 2;                                          // cuello
+      if (y >= 14 && y <= 17) return Math.abs(dx) <= 5.5 + (y - 14);                   // hombros
+      if (y >= 18 && y < PT) return Math.abs(dx) <= 8.4 + ((y - 18) / (PT - 18)) ** 1.5 * 3.2; // manto en A
+      return false;
+    };
+    for (let y = 0; y < PT; y++) for (let x = 0; x < W; x++) {
+      if (!body(x, y)) continue;
+      const dx = x - cx;
+      let k = dx < -4 ? 4 : dx < 3 ? 3 : 2;
+      if (!body(x, y - 1)) k += 1;
+      if (y > 28 && (dx === -5 || dx === 5 || dx === -9 || dx === 9)) k -= 1;         // pliegues del manto
+      p.set(x, y, st[U.clamp(k, 1, 5)]);
+    }
+    // corona de 3 puntas
+    [-3, 0, 3].forEach((dx) => { p.set(cx + dx, 0, st[5]); p.set(cx + dx, 1, st[4]); });
+    for (let dx = -3; dx <= 3; dx++) { p.set(cx + dx, 2, st[dx < 2 ? 5 : 4]); p.set(cx + dx, 3, st[dx < 2 ? 3 : 2]); }
+    // cuencas de los ojos y sombra bajo la barbilla
+    p.set(cx - 2, 7, st[1]); p.set(cx + 2, 7, st[1]);
+    for (let dx = -2; dx <= 2; dx++) p.set(cx + dx, 13, st[1]);
+    // brazos: mangas que convergen en las manos sobre la empuñadura
+    p.line(cx - 8, 17, cx - 2, 25, st[4]); p.line(cx - 8, 18, cx - 2, 26, st[3]); p.line(cx - 8, 19, cx - 3, 26, st[3]);
+    p.line(cx + 8, 17, cx + 2, 25, st[2]); p.line(cx + 8, 18, cx + 2, 26, st[1]); p.line(cx + 8, 19, cx + 3, 26, st[1]);
+    p.rect(cx - 2, 24, 5, 3, st[4]); p.rect(cx - 2, 26, 5, 1, st[2]);
+    // espada: pomo y puño sobre las manos, guarda y hoja hasta el pedestal
+    p.set(cx, 20, st[5]); p.set(cx - 1, 21, st[4]); p.set(cx, 21, st[5]); p.set(cx + 1, 21, st[3]);
+    p.set(cx, 22, st[3]); p.set(cx, 23, st[3]);
+    p.rect(cx - 5, 28, 11, 1, st[5]); p.rect(cx - 5, 29, 11, 1, st[2]);
+    for (let y = 30; y < PT; y++) { p.set(cx - 1, y, st[5]); p.set(cx, y, st[4]); p.set(cx + 1, y, st[2]); }
+    p.set(cx - 1, PT - 1, st[2]); p.set(cx + 1, PT - 1, st[2]);   // punta de la hoja
+    mossOver(p, 77, 1.2, 0.62);
+    S.statue = p.sprite();
+  }
+
+  // Muelle: cubierta a ras de suelo con norays y cuerda; pilotes y tirantes que bajan DENTRO del agua
+  // hasta su línea de flotación (WY+14) con algas, y un embarcadero bajo a nivel del agua (y≈186–191).
+  // Se parte en dos sprites: lo que queda por encima de WY va en drawBack (y se refleja); lo de WY hacia
+  // abajo va en drawOverlay, después del agua, teñido con K.env.mulColor, y tapa el reflejo.
+  const DOCK = { FOOT: WY + 14, LOW: 24 };
+  function buildDock(len) {
+    const y0 = GY - 18, H = WY + DOCK.LOW - y0, p = new Pix(len, H), w = C.wood, m = C.moss;
+    const Y = (y) => y - y0;   // fila de pantalla → fila del sprite
+    const dk = Y(GY - 1);      // fila superior de la cubierta
+    const foot = Y(DOCK.FOOT); // línea de flotación de los pilotes
+    const piles = [];
+    for (let x = 3; x < len - 3; x += 22) piles.push(x);
+    // embarcadero bajo (detrás de los pilotes) entre los dos últimos vanos, con escalera desde la cubierta
+    const lx0 = piles[piles.length - 3] + 4, lTop = Y(186);
+    for (let x = lx0; x < len; x++) {
+      const seam = (x - lx0) % 5 === 4;
+      p.set(x, lTop, seam ? w[3] : w[5]); p.set(x, lTop + 1, seam ? w[2] : w[4]); p.set(x, lTop + 2, seam ? w[2] : w[3]);
+      p.set(x, lTop + 3, w[1]); p.set(x, lTop + 4, w[0]);
+      p.set(x, lTop + 5, U.hash(x, 7, 13) < 0.6 ? m[1] : m[0]);
+      if (U.hash(x, 8, 13) < 0.3) p.set(x, lTop + 6, m[0]);
+    }
+    const ladX = lx0 + 3;
+    for (let y = dk + 6; y < lTop; y++) { p.set(ladX, y, w[3]); p.set(ladX + 4, y, w[2]); if ((y - dk) % 3 === 0) for (let i = 1; i < 4; i++) p.set(ladX + i, y, w[4]); }
+    // noray bajo sobre el embarcadero
+    const bx = len - 8;
+    for (let y = lTop - 4; y < lTop; y++) { p.set(bx, y, w[4]); p.set(bx + 1, y, w[3]); p.set(bx + 2, y, w[2]); }
+    p.rect(bx, lTop - 2, 3, 1, C.straw[2]);
+    // tirantes en zigzag entre pilotes (salvo en los vanos del embarcadero): del larguero al agua
+    for (let i = 0; i < piles.length - 1; i++) {
+      const a = piles[i] + 4, b = piles[i + 1] - 1;
+      if (b > lx0) break;
+      const top = Y(GY + 7), bot = Y(WY + 9), [ya, yb] = i & 1 ? [top, bot] : [bot, top];
+      p.line(a, ya, b, yb, w[3]); p.line(a, ya + 1, b, yb + 1, w[1]);
+    }
+    // pilotes: madera mojada (un tono más oscura) cerca del agua y algas en la línea de flotación
+    for (const x of piles) {
+      for (let y = dk + 6; y < foot; y++) {
+        const c = y >= Y(WY + 4) ? [w[2], w[1], w[1], w[0]] : [w[3], w[2], w[2], w[1]];
+        for (let i = 0; i < 4; i++) p.set(x + i, y, c[i]);
+      }
+      for (let i = 0; i < 4; i++) {
+        const len2 = 2 + Math.floor(U.hash(x + i, 3, 17) * 4);
+        for (let k = 1; k <= len2; k++) p.set(x + i, foot - k, k === len2 ? m[2] : (k & 1 ? m[0] : m[1]));
+      }
+      for (let i = 0; i < 4; i++) p.set(x + i, dk + 7, w[0]);
+    }
+    // cubierta: tablones transversales vistos desde arriba
+    for (let x = 0; x < len; x++) {
+      const plank = Math.floor(x / 6), seam = x % 6 === 5, tone = U.hash(plank, 0, 21) < 0.5 ? 4 : 3;
+      for (let y = dk; y < dk + 4; y++) p.set(x, y, seam ? w[2] : y === dk ? w[tone + 1] : y === dk + 3 ? w[tone - 1] : w[tone]);
+      p.set(x, dk + 4, w[2]); p.set(x, dk + 5, w[1]);
+    }
+    for (let x = 4; x < len; x += 22) p.set(x + 1, dk + 4, C.iron[3]);
+    // norays con cuerda y cuerda colgante entre ellos
+    const posts = [1, Math.round(len / 2) - 2, len - 6];
+    posts.forEach((x) => {
+      for (let y = 2; y < dk + 4; y++) { p.set(x, y, w[4]); p.set(x + 1, y, w[3]); p.set(x + 2, y, w[3]); p.set(x + 3, y, w[2]); }
+      p.clr(x, 2); p.clr(x + 3, 2); p.set(x + 1, 2, w[5]); p.set(x + 2, 2, w[4]);
+      p.rect(x, 6, 4, 1, C.straw[3]); p.rect(x, 7, 4, 1, C.straw[1]);
+    });
+    for (let i = 0; i < posts.length - 1; i++) {
+      const a = posts[i] + 4, b = posts[i + 1] - 1;
+      for (let x = a; x <= b; x++) { const u = (x - a) / (b - a); p.set(x, 7 + Math.round(Math.sin(u * Math.PI) * 5), C.straw[2]); }
+    }
+    // parte alta (drawBack, se refleja) y parte sumergida (drawOverlay)
+    const split = Y(WY), up = new Pix(len, split), lo = new Pix(len, H - split);
+    for (let y = 0; y < H; y++) for (let x = 0; x < len; x++) {
+      const c = p.d[y * len + x];
+      if (!c) continue;
+      if (y < split) up.d[y * len + x] = c; else lo.d[(y - split) * len + x] = c;
+    }
+    S.dock = up.sprite(); S.dockY0 = y0; S.dockLow = lo.canvas();
+    // Sombra de la cubierta sobre la orilla (se aplica con multiply antes del muelle).
+    const sc = ['#857D70', '#958E82', '#A69F94', '#B7B1A7', '#C8C3BA', '#DAD6CF'], shade = new Pix(len, sc.length);
+    for (let y = 0; y < sc.length; y++) for (let x = 0; x < len; x++) shade.set(x, y, sc[y]);
+    S.dockShade = shade.canvas();
+    // Onda al pie de cada pilote y del embarcadero, y reflejo corto del pilote bajo su línea de flotación
+    // (3 frames). Se dibujan con alfa, así que son lienzos opacos aparte.
+    const fl = DOCK.FOOT - WY;
+    S.dockRip = []; S.dockRefl = [];
+    for (let f = 0; f < 3; f++) {
+      const rp = new Pix(len, DOCK.LOW), rf = new Pix(len, DOCK.LOW), foam = '#C9CDB8';
+      for (const x of piles) {
+        if (f === 0) rp.rect(x - 1, fl, 6, 1, foam);
+        else if (f === 1) { rp.rect(x - 2, fl, 8, 1, foam); rp.rect(x, fl + 1, 4, 1, foam); }
+        else { rp.rect(x - 3, fl, 2, 1, foam); rp.rect(x + 5, fl, 2, 1, foam); rp.rect(x - 1, fl + 1, 6, 1, foam); }
+        for (let y = fl + 1; y < DOCK.LOW; y++) {
+          const d = (y - fl) / (DOCK.LOW - fl);
+          if (U.hash(x + f * 31, y, 23) < d * 0.8) continue;
+          const o = Math.round(Math.sin(y * 1.3 + f * 2.1 + x) * (0.5 + d));
+          rf.rect(x + o, y, 4, 1, y === fl + 1 ? w[0] : w[1]);
+        }
+      }
+      for (let x = lx0; x < len; x++) if (U.hash(x >> 2, f, 29) < 0.55) rp.set(x, lTop + 7 - split, foam);
+      S.dockRip.push(rp.canvas()); S.dockRefl.push(rf.canvas());
+    }
+  }
+
+  // Granja: surcos por campo, manojos de trigo (2 variantes × 4 inclinaciones), arroyo y cascada.
+  function buildFarm() {
+    S.wheat = [0, 1].map((v) => [0, 1, 2, 3].map((lean) => {
+      const W = 12, H = 18, p = new Pix(W, H), rr = U.mulberry32(50 + v * 7);
+      for (let i = 0; i < 5; i++) {
+        const bx = 1 + i * 2, hgt = 11 + Math.floor(rr() * 6);
+        for (let j = 0; j < hgt; j++) {
+          const u = j / hgt, x = bx + Math.round(lean * u * u), y = H - 1 - j;
+          if (j >= hgt - 4) {
+            p.set(x, y, j === hgt - 1 ? '#D9C68A' : (j & 1) ? '#E2CC80' : '#C8B060');
+            if (j < hgt - 1) p.set(x + 1, y, (j & 1) ? '#A08C48' : '#B89E54');
+          } else p.set(x, y, j < 4 ? '#6E6A36' : '#8E8446');
+        }
+      }
+      return p.sprite();
+    }));
+    // Campos labrados: solo una franja fina en la superficie (y 170–176): tierra oscura con caballones
+    // de 1 px y brotes. La cara del talud queda con la tierra del mundo; como mucho, surcos cortos
+    // verticales y terrones sueltos justo bajo el borde, nunca bandas horizontales continuas.
+    S.fields = [];
+    for (const f of FIELDS) {
+      const fw = f[1] - f[0], p = new Pix(fw, 9), so = C.soil;
+      const ROWS = [2, 1, 3, 1, 1, 3, 1];   // borde lejano, surco, caballón, surcos, caballón, borde cercano
+      for (let y = 0; y < ROWS.length; y++) {
+        const end = Math.round(U.hash(y, f[0], 5) * 1.5) + (y === 0 ? 2 : y === ROWS.length - 1 ? 1 : 0);
+        for (let x = end; x < fw - end; x++) {
+          let k = ROWS[y];
+          if (k === 3 && U.hash(x, y, 8) < 0.18) k = 2;           // caballón irregular
+          if (k === 1 && U.hash(x, y, 9) < 0.08) k = 0;           // hoyos
+          p.set(x, y, so[k]);
+        }
+        // brotes en los caballones
+        if (ROWS[y] === 3) for (let x = 2 + y; x < fw - 3; x += 4 + (x & 1)) { p.set(x, y, '#6E7A38'); if (U.hash(x, y, 2) < 0.5) p.set(x, y - 1, '#8A9046'); }
+      }
+      // bajo el borde: surcos cortos verticales y terrones sueltos
+      for (let x = 2; x < fw - 2; x += 3 + Math.floor(U.hash(x, 1, 11) * 4)) {
+        p.set(x, ROWS.length, so[0]);
+        if (U.hash(x, 2, 11) < 0.45) p.set(x, ROWS.length + 1, so[0]);
+        else if (U.hash(x, 3, 11) < 0.5) p.set(x + 1, ROWS.length, so[1]);
+      }
+      S.fields.push(p.sprite());
+    }
+    // arroyo con cascada al río (5 frames de corriente)
+    S.stream = [];
+    const W = 22, H = WY - GY + 2, cxOf = (y) => 11 + Math.round(Math.sin(y * 0.3 + 0.4) * 1.6), hwOf = (y) => 1.6 + y * 0.2;
+    for (let f = 0; f < 5; f++) {
+      const p = new Pix(W, H);
+      for (let y = 0; y < H; y++) {
+        const cx = cxOf(y), hw = hwOf(y), fall = y >= H - 6;
+        for (let x = 0; x < W; x++) {
+          const d = x - cx, ad = Math.abs(d);
+          if (ad > hw + 1.2) continue;
+          if (ad > hw) { p.set(x, y, fall ? null : (U.hash(x, y, 4) < 0.25 ? '#8C8A7A' : '#3B2B1E')); continue; }
+          let c;
+          if (!fall) {
+            c = d < -hw + 1 ? '#4C5B54' : ad < 1 ? '#6F8379' : '#5E7069';
+            if (U.mod(y - f + Math.floor(U.hash(x, 0, 6) * 5), 5) === 0 && ad < hw - 0.6) c = '#9AB0A6';
+          } else {
+            const v = U.mod(y - f * 2 + Math.floor(U.hash(x, 1, 6) * 5), 5);
+            c = v === 0 ? '#DCE6DE' : v < 3 ? '#A9BCB2' : '#7E948A';
+            if (y >= H - 2) c = U.hash(x, y + f, 3) < 0.5 ? '#E4ECE4' : '#B8C8BE';
+          }
+          p.set(x, y, c);
+        }
+      }
+      // piedras en la orilla del fondo (el arroyo sale de detrás)
+      p.blob(cxOf(0) - 4, 1, 2, 1, (dx, dy) => (dy < 0 ? C.stone[4] : C.stone[3]));
+      p.blob(cxOf(0) + 4, 1, 2, 1, (dx, dy) => (dy < 0 ? C.stone[4] : C.stone[2]));
+      S.stream.push(p.sprite());
+    }
+    S.streamCX = 11;
+    // puentecillo de tablones por donde pasa el camino
+    const b = new Pix(18, 6), w = C.wood;
+    for (let x = 0; x < 18; x++) {
+      const seam = x % 4 === 3;
+      b.set(x, 1, seam ? w[3] : w[5]); b.set(x, 2, seam ? w[2] : w[4]); b.set(x, 3, w[2]); b.set(x, 4, w[1]);
+    }
+    [0, 16].forEach((x) => { b.rect(x, 0, 2, 6, w[3]); b.set(x, 0, w[5]); b.set(x + 1, 5, w[1]); });
+    S.bridge = b.sprite();
+  }
+
+  // Conejos (miran a la derecha): sentado, mordisqueando, salto estirado y aterrizaje.
+  const RPAL = { b: '#8A7862', B: '#A6937A', d: '#66573F', w: '#E6DECE', k: '#231C17', e: '#7C6A56', E: '#B89484', n: '#C49A8A' };
+  const RABBIT = [
+    [
+      '......ee...',
+      '......eE...',
+      '......BBb..',
+      '....BBBbkb.',
+      '..BBbbbbbbn',
+      '.wbbbbbbbb.',
+      '..bbbbbbd..',
+      '..ddd.dd...',
+    ],
+    [
+      '...........',
+      '.....ee....',
+      '......eBb..',
+      '....BBBbkb.',
+      '..BBbbbbbbn',
+      '.wbbbbbbbb.',
+      '..bbbbbbd..',
+      '..ddd.dd...',
+    ],
+    [
+      '...........',
+      '.......ee..',
+      '..BBBBBeBb.',
+      '.wBbbbbbbkb',
+      '..bbbbbbbbn',
+      '.dd...ddd..',
+      'dd.........',
+      '...........',
+    ],
+    [
+      '.......e...',
+      '......eE...',
+      '....BBBBb..',
+      '..BBbbbbkb.',
+      '.wbbbbbbbbn',
+      '..bbbbbbb..',
+      '..ddd..dd..',
+      '...........',
+    ],
+  ];
+  function buildRabbits() {
+    S.rabbit = RABBIT.map((rows, i) => { const p = new Pix(11, 8); p.rows(0, 0, rows, RPAL, 'rabbit' + i); return p.sprite(); });
+  }
+
+  // ------------------------------------------------------------------ disposición y estado
+  // Campos de cultivo [x0, x1] dentro de la granja.
+  const FIELDS = [[804, 872], [884, 952], [964, 1032]];
+  const objs = [], lights = [], sparks = [], rabbits = [];
+  const rr = U.mulberry32(9137);
+  let bannerPh = 0, dockX0 = null;
+
+  // Dibuja el sprite con su columna de anclaje ax en la x del mundo y su base (exclusiva) en la fila by.
+  function put(ctx, s, wx, ax, by, dir = 1) {
+    const x = K.sx(wx) - (dir < 0 ? s.w - 1 - ax : ax);
+    if (x >= K.W || x + s.w <= 0) return;
+    ctx.drawImage(dir < 0 ? s.l : s.r, x, by - s.h);
+  }
+  const frame = (fps, n, off = 0) => Math.floor(K.t * fps + off) % n;
+
+  function layout() {
+    objs.length = 0; lights.length = 0; dockX0 = null;
+    const add = (x0, x1, z, draw) => objs.push({ x0, x1, z, draw });
+    let towerN = 0, wallN = 0, torchN = 0;
+    for (const t of K.MAP.things) {
+      switch (t.type) {
+        case 'portal':
+          add(t.x - 24, t.x + 24, 0, (ctx) => { put(ctx, S.portalSwirl[frame(7, 8)], t.x, 23, GY + 2); put(ctx, S.portal, t.x, 23, GY + 2); });
+          break;
+        case 'camp': {
+          const tx = t.x - 22, fx = t.x + 7, sitX = t.x - 6, standX = t.x + 21;
+          lights.push({ type: 'fire', x: fx, y: GY - 8, power: 0.6 });
+          add(t.x - 40, t.x + 30, 8, (ctx) => {
+            put(ctx, S.tent, tx, 14, GY + 1);
+            put(ctx, S.campBack, fx, 10, GY + 2);
+            put(ctx, S.campFlame[frame(10, 8)], fx, 7, GY - 1);
+            put(ctx, S.campFront, fx, 10, GY + 2);
+            put(ctx, S.seatLog, sitX, 5, GY + 2);
+            put(ctx, S.vagSit[frame(1.3, 2)], sitX, 5, GY);
+            put(ctx, S.vagStand[frame(1.1, 2, 0.5)], standX, 4, GY + 1, -1);
+          });
+          sparkSrc.push({ x: fx, y: GY - 12, rate: 2.5, spread: 3, vy: 16 });
+          break;
+        }
+        case 'woodWall':
+          add(t.x - 9, t.x + 9, 3, (ctx) => put(ctx, S.woodWall, t.x, 9, GY + 2));
+          break;
+        case 'tower': {
+          const dir = towerN++ === 0 ? -1 : 1, x = dir < 0 ? t.x : t.x - 2, ph = towerN * 0.37;
+          add(x - 14, x + 14, 1, (ctx) => put(ctx, S.tower[frame(0.8, 2, ph)], x, 13, GY + 2, dir));
+          break;
+        }
+        case 'farm':
+          add(t.x0, t.x1, 5, (ctx) => drawFarm(ctx, t));
+          break;
+        case 'stoneWall': {
+          // el muro derecho se aparta 5 px para no tapar la pata de la torre vecina
+          const s = S.stoneWall[wallN++ % 2], x = wallN === 2 ? t.x + 5 : t.x;
+          add(x - 14, x + 14, 3, (ctx) => put(ctx, s, x, 13, GY + 2));
+          break;
+        }
+        case 'torch': {
+          const x = torchN++ === 1 ? t.x - 2 : t.x, ph = torchN * 3.3;
+          lights.push({ type: 'torch', x, y: GY - 26, power: 1 });
+          add(x - 8, x + 8, 7, (ctx) => { put(ctx, S.torchFlame[frame(6, 8, ph)], x, 4, GY - 19); put(ctx, S.torch, x, 7, GY + 2); });
+          break;
+        }
+        case 'shopHammer':
+          add(t.x - 18, t.x + 18, 2, (ctx) => put(ctx, S.shopHammer, t.x, 18, GY + 2));
+          break;
+        case 'shopBow':
+          add(t.x - 18, t.x + 18, 2, (ctx) => put(ctx, S.shopBow, t.x, 18, GY + 2));
+          break;
+        case 'campfire':
+          lights.push({ type: 'fire', x: t.x, y: GY - 18, power: 1 });
+          sparkSrc.push({ x: t.x, y: GY - 26, rate: 9, spread: 7, vy: 26 });
+          add(t.x - 20, t.x + 20, 6, (ctx) => {
+            put(ctx, S.fireBack, t.x, 18, GY + 3);
+            put(ctx, S.fireFlame[frame(10, 8)], t.x, 12, GY - 1);
+            put(ctx, S.fireFront, t.x, 18, GY + 3);
+          });
+          break;
+        case 'banner':
+          add(t.x - BANNER.PC - 1, t.x + BANNER.BW + BANNER.LEAN, 4, (ctx) => {
+            const wind = K.env.wind, lv = wind < 0.3 ? 0 : wind < 0.6 ? 1 : 2;
+            const top = GY + 2 - BANNER.PH, s = S.banner[lv][Math.floor(bannerPh) % 4];
+            put(ctx, S.bannerPole, t.x, BANNER.PC, GY + 2);
+            put(ctx, s, t.x, (BANNER.BW - 1) / 2, top + BANNER.TOP + s.h);
+          });
+          break;
+        case 'statue':
+          add(t.x - 17, t.x + 17, 4, (ctx) => put(ctx, S.statue, t.x, 16, GY + 2));
+          break;
+        case 'dock':
+          dockX0 = t.x0;
+          add(t.x0, t.x1, 4, (ctx) => {
+            const x = K.sx(t.x0);
+            ctx.globalCompositeOperation = 'multiply';
+            ctx.drawImage(S.dockShade, x, GY + 5);
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.drawImage(S.dock.r, x, S.dockY0);
+          });
+          break;
+      }
+    }
+    objs.sort((a, b) => a.z - b.z);
+    // conejos en cada pradera
+    rabbits.length = 0;
+    for (const z of K.MAP.zones) {
+      if (z.type !== 'meadow') continue;
+      const n = z.x1 - z.x0 > 300 ? 6 : 5;
+      for (let i = 0; i < n; i++) {
+        rabbits.push({
+          zx0: z.x0 + 6, zx1: z.x1 - 6, x: z.x0 + 20 + ((i + rr() * 0.8) / n) * (z.x1 - z.x0 - 40),
+          y: GY + 1 + Math.floor(rr() * 3), dir: rr() < 0.5 ? -1 : 1, st: 'idle', t: rr() * 3, k: 0, jy: 0,
+          hx0: 0, hx1: 0, dur: 0.3, hh: 3, flee: 0, nib: 0,
+        });
+      }
+    }
+  }
+  const sparkSrc = [];
+
+  function drawFarm(ctx, t) {
+    const sx = t.streamX;
+    // campos labrados
+    FIELDS.forEach((f, i) => { if (K.sx(f[1]) > -4 && K.sx(f[0]) < K.W + 4) ctx.drawImage(S.fields[i].r, K.sx(f[0]), GY); });
+    // arroyo, cascada y puentecillo
+    put(ctx, S.stream[frame(8, 5)], sx, S.streamCX, WY + 1);
+    put(ctx, S.bridge, sx, 8, GY + 4);
+    // trigo que se mece con el viento (ola que recorre el campo)
+    const wind = U.clamp(K.env.wind, 0, 1), tt = K.t;
+    for (const f of FIELDS) {
+      if (K.sx(f[1]) < -12 || K.sx(f[0]) > K.W + 12) continue;
+      let v = 0;
+      for (let x = f[0] + 1; x < f[1] - 8; x += 5) {
+        const wave = 0.5 + 0.5 * Math.sin(tt * 2.4 - x * 0.07);
+        const lean = U.clamp(Math.round(wind * (0.6 + wave * 2.4)), 0, 3);
+        const s = S.wheat[(v++ + (x >> 3)) & 1][lean];
+        ctx.drawImage(s.r, K.sx(x), GY + 3 - s.h);
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------ fauna
+  function hop(b, dist, dur, hh) {
+    let to = b.x + b.dir * dist;
+    if (to < b.zx0 || to > b.zx1) { b.dir = -b.dir; to = b.x + b.dir * dist; }
+    b.st = 'hop'; b.k = 0; b.hx0 = b.x; b.hx1 = U.clamp(to, b.zx0, b.zx1); b.dur = dur; b.hh = hh;
+  }
+  function updateRabbit(b, dt) {
+    const p = K.player, dist = p ? Math.abs(p.x - b.x) : 1e9;
+    if (b.st === 'hidden') {
+      b.t -= dt;
+      if (b.t <= 0 && dist > 120) {
+        b.x = U.lerp(b.zx0 + 10, b.zx1 - 10, rr()); b.st = 'idle'; b.t = 1 + rr() * 2;
+        if (p && Math.abs(p.x - b.x) < 90) b.st = 'hidden';
+      }
+      return;
+    }
+    if (b.st === 'hop') {
+      b.k += dt / b.dur;
+      const k = Math.min(1, b.k);
+      b.x = U.lerp(b.hx0, b.hx1, k); b.jy = -Math.sin(Math.PI * k) * b.hh;
+      if (k >= 1) {
+        b.st = 'idle'; b.jy = 0; b.t = 0.6 + rr() * 2.8;
+        if (b.flee > 0) b.t = 0.02;
+      }
+      return;
+    }
+    b.flee = Math.max(0, b.flee - dt);
+    b.nib = Math.max(0, b.nib - dt);
+    if (p && dist < 40) {
+      // huye: si está acorralado contra el borde de la pradera, se esconde en la madriguera
+      b.dir = p.x > b.x ? -1 : 1; b.flee = 1.4;
+      const room = b.dir < 0 ? b.x - b.zx0 : b.zx1 - b.x;
+      if (room < 10) { b.st = 'hidden'; b.t = 3 + rr() * 4; return; }
+      hop(b, 11 + rr() * 5, 0.2, 4);
+      return;
+    }
+    b.t -= dt;
+    if (b.t <= 0) {
+      if (b.flee > 0 && dist < 90) { hop(b, 11 + rr() * 5, 0.2, 4); return; }
+      const r = rr();
+      if (r < 0.5) { if (rr() < 0.4) b.dir = -b.dir; hop(b, 4 + rr() * 5, 0.26, 2); }
+      else if (r < 0.8) { b.nib = 0.4 + rr() * 0.8; b.t = 0.8 + rr() * 2; }
+      else b.t = 0.8 + rr() * 2.5;
+    }
+  }
+  function drawRabbit(ctx, b) {
+    if (b.st === 'hidden') return;
+    let f = 0;
+    if (b.st === 'hop') f = b.k < 0.55 ? 2 : 3;
+    else if (b.nib > 0) f = Math.floor(K.t * 6) & 1;
+    put(ctx, S.rabbit[f], b.x, 5, Math.round(b.y + b.jy), b.dir);
+  }
+
+  // ------------------------------------------------------------------ chispas de las fogatas
+  function updateSparks(dt) {
+    const camC = K.camX + K.W / 2;
+    for (const s of sparkSrc) {
+      if (Math.abs(s.x - camC) > K.W) continue;
+      s.acc = (s.acc || 0) + dt * s.rate;
+      while (s.acc >= 1 && sparks.length < 60) {
+        s.acc -= 1;
+        sparks.push({ x: s.x + (rr() - 0.5) * s.spread * 2, y: s.y + rr() * 6, vx: (rr() - 0.5) * 6, vy: -(s.vy * (0.6 + rr() * 0.8)), life: 0, max: 0.7 + rr() * 1.3, ph: rr() * 6 });
+      }
+      if (s.acc >= 1) s.acc = 0;
+    }
+    const wind = K.env.wind;
+    for (let i = sparks.length - 1; i >= 0; i--) {
+      const s = sparks[i];
+      s.life += dt;
+      if (s.life >= s.max) { sparks.splice(i, 1); continue; }
+      s.x += (s.vx + wind * 9 + Math.sin(s.life * 7 + s.ph) * 6) * dt;
+      s.y += s.vy * dt; s.vy *= 1 - dt * 0.6;
+    }
+  }
+  function drawSparks(ctx) {
+    for (const s of sparks) {
+      const u = s.life / s.max, x = K.sx(s.x), y = Math.round(s.y);
+      if (x < -1 || x > K.W) continue;
+      ctx.globalAlpha = u < 0.7 ? 1 : (1 - u) / 0.3;
+      ctx.fillStyle = u < 0.25 ? '#FFF1B8' : u < 0.55 ? '#FFB347' : '#E0602C';
+      ctx.fillRect(x, y, 1, 1);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // ------------------------------------------------------------------ vista de depuración (?view=props)
+  K.views.props = (ctx) => {
+    let x = 4, y = 4, rowH = 0;
+    const show = (s) => {
+      if (x + s.w > K.W - 4) { x = 4; y += rowH + 4; rowH = 0; }
+      ctx.drawImage(s.r, x, y); x += s.w + 4; rowH = Math.max(rowH, s.h);
+    };
+    [S.portal, S.portalSwirl[0], S.tent, S.vagStand[0], S.vagStand[1], S.vagSit[0], S.vagSit[1], S.seatLog,
+      S.woodWall, S.tower[0], S.tower[1], S.stoneWall[0], S.stoneWall[1], S.torch, S.shopHammer, S.shopBow,
+      S.bannerPole, S.statue].forEach(show);
+    S.torchFlame.forEach(show); S.fireFlame.forEach(show); show(S.fireBack); show(S.fireFront);
+    S.campFlame.forEach(show); show(S.campBack); show(S.campFront);
+    S.banner.forEach((l) => l.forEach(show));
+    S.rabbit.forEach(show); S.wheat.forEach((v) => v.forEach(show)); S.stream.forEach(show); show(S.bridge);
+  };
+
+  K.register('props', {
+    order: 11,
+    init() {
+      buildPortal(); buildTorch(); buildCampfire(); buildTent(); buildVagrants(); buildWoodWall();
+      S.tower = [buildTower(0), buildTower(1)];
+      S.stoneWall = [buildStoneWall(41), buildStoneWall(58)];
+      S.shopHammer = buildShop('hammer'); S.shopBow = buildShop('bow');
+      buildBanner(); buildStatue(); buildDock(152); buildFarm(); buildRabbits();
+      sparkSrc.length = 0;
+      layout();
+      for (const b of rabbits) b.t = rr() * 2;
+    },
+    update(dt) {
+      for (const L of lights) K.lights.push(L);
+      bannerPh += dt * (2.5 + 7 * U.clamp(K.env.wind, 0, 1));
+      updateSparks(dt);
+      for (const b of rabbits) updateRabbit(b, dt);
+    },
+    drawBack(ctx) {
+      const W = K.W;
+      for (const o of objs) {
+        if (K.sx(o.x1) < -4 || K.sx(o.x0) > W + 4) continue;
+        o.draw(ctx);
+      }
+      for (const b of rabbits) { const x = K.sx(b.x); if (x > -12 && x < W + 12) drawRabbit(ctx, b); }
+      drawSparks(ctx);
+    },
+    // Parte sumergida del muelle: va después del agua (tapa el reflejo) y, como la oscuridad ya se aplicó,
+    // se multiplica por K.env.mulColor.
+    drawOverlay(ctx) {
+      if (dockX0 === null || !S.dockLow) return;
+      const x = K.sx(dockX0);
+      if (x >= K.W || x + S.dockLow.width <= 0) return;
+      const m = K.env.mulColor, f = Math.floor(K.t * 5) % 3;
+      ctx.globalAlpha = 0.3; ctx.drawImage(U.multiplyTint(S.dockRefl[f], m), x, WY);
+      ctx.globalAlpha = 1; ctx.drawImage(U.multiplyTint(S.dockLow, m), x, WY);
+      ctx.globalAlpha = 0.5; ctx.drawImage(U.multiplyTint(S.dockRip[f], m), x, WY);
+      ctx.globalAlpha = 1;
+    },
+  });
+})(window.K);
+
+</script>
+<script>
+/* src/20_horse.js */
+// 20_horse.js — caballo y monarca: estado, estamina, marcha procedural, animaciones y efectos.
+(function (K) {
+  const U = K.util, C = K.CONFIG, P = K.params;
+  const GY = K.GROUND_Y;
+  const RY = K.royal;
+
+  // ================================================================ paletas
+  // Pelajes por tabla: las matrices usan letras y cada pelaje pone sus colores.
+  // L luz, B base, S sombra, D sombra profunda, N hocico, E ojo, M/m/K crin y cola, W/w calcetín, H casco.
+  const COATS = {
+    gray: {
+      L: '#ADAEB7', B: '#8A8A94', S: '#5E5F6E', D: '#464758', N: '#61616E', E: '#16151B',
+      M: '#3B3A44', m: '#57565F', K: '#27262E', W: '#D8D4CC', w: '#A7A39C', H: '#3A3433',
+    },
+    chestnut: {
+      L: '#96665F', B: '#7B4E53', S: '#623128', D: '#47221C', N: '#52302A', E: '#170D0B',
+      M: '#462823', m: '#673F30', K: '#2B1512', W: '#F0D8CE', w: '#C5A99F', H: '#382622',
+    },
+  };
+  // Monarca: corona g/y/o, cara f/F/h/k, túnica t/T/u, pierna y bota p/P/b, capa c/C/v.
+  const ROYAL = {
+    g: '#EB9B36', y: '#FFD37C', o: '#A65C1E',
+    f: RY.skin, F: U.shade(RY.skin, 0.8), h: '#4A2F24', k: '#231918',
+    t: '#5F4FA0', T: '#433779', u: '#7C6DC2',
+    p: '#EEE9D6', P: '#BDB6A0', b: '#3A2A25',
+    c: RY.cape[0], C: RY.cape[1], v: U.lerpColor(RY.cape[0], '#FFFFFF', 0.2),
+  };
+
+  // ================================================================ matrices (coords locales)
+  // Origen = centro del caballo sobre GROUND_Y, mirando a la derecha. ax/ay = esquina sup-izq.
+  const part = (ax, ay, rows) => ({ ax, ay, rows });
+  const pad = (rows) => { const w = Math.max(...rows.map((r) => r.length)); return rows.map((r) => r.padEnd(w, '.')); };
+
+  // Tronco en barril: anca y hombro como masas redondas (luz arriba, línea de sombra delante del muslo y tras la espalda).
+  const BODY = part(-15, -23, [
+    '....LLLLLL',
+    '..LLLLLLLLLLLLLLLLLLLLL',
+    '.LLLLLLLBBBBBBBBBBSBBBBL',
+    'BLLLLLBBBBSBBBBBBBSBBBLLB',
+    'BBLLLBBBBSBBBBBBBBSBBBLBBB',
+    'SBBBBBBBSBBBBBBBBSBBBBBBBB',
+    'SBBBBBBSBBBBBBBBBSBBBBBBBS',
+    'SBBBBBBSBBBBBBBBSBBBBBBBBS',
+    'SBBBBBSBBBSSSSSSSBBBBBBBSS',
+    '.SBBBBSSSSSSSSSSSBBBBBBSS',
+    '.DSBBSSSSSSSSSSSSSBBBBSD',
+    '..DSBBS.DDDDDDDDD.SBBSD',
+    '...DSBS...........SBBS',
+  ]);
+  // Cuello grueso y arqueado; la franja clara bajo la crin marca la luz cenital.
+  const NECK = part(1, -28, [
+    '..........BBBS',
+    '........BBBBBS',
+    '......BBBBBBBS',
+    '....BBBBBBLLLS',
+    '..BBBBBBLLBBSS',
+    '.BBBBBLLBBBBSS',
+    '.BBBLLBBBBBBSS',
+    '.BLLBBBBBBBBSS',
+    '.LBBBBBBBBBSS',
+    '.BBBBBBBBBBSS',
+    '..BBBBBBBBSS',
+    '...BBBBBBBSS',
+    '....BBBBBSS',
+    '.....BBBBSS',
+    '......SSSS',
+  ]);
+  // Cabeza grande: frente clara, carrillo redondo, hocico oscuro, ojo de 1 px bajo el copete.
+  const HEAD = part(10, -30, [
+    '....L',
+    '...SBL',
+    '..MSBB',
+    '..MBMML',
+    '..BLmML',
+    '.BBLBMLL',
+    '.BBEBBLL',
+    '.BBBBBBLL',
+    '.SBBBBBBL',
+    '.SSBBBBBBL',
+    '..SSBBBBBLL',
+    '...SSSBBBBL',
+    '.....DSNNNN',
+    '......DNNDN',
+    '......DDNNN',
+    '........DD',
+  ]);
+  // Pastando: cuello en arco que baja hasta el suelo y cabeza casi vertical.
+  const NECK_LOW = part(1, -25, [
+    '....BB',
+    '..BBBBBBB',
+    '.BBBBBBBBB',
+    '.BBBBBBBBBB',
+    '.BBBBBBBBBBB',
+    '.BBBLLLLBBBB',
+    '.BLLBBBBLLBBB',
+    '..BBBBBBBBLLB',
+    '...SBBBBBBBBLL',
+    '....SBBBBBBBBB',
+    '.....SSBBBBBBBL',
+    '.......SSBBBBBB',
+    '.........SSBBBB',
+    '...........SBBB',
+    '............SBB',
+  ]);
+  const HEAD_LOW = part(12, -14, [
+    '...L',
+    '..SBL',
+    '.MMBBL',
+    '.MmMBL',
+    'BBMBBBL',
+    'SBEBBBL',
+    'SBBBBBL',
+    '.SBBBBB',
+    '.SSBBBL',
+    '..SBBBB',
+    '..SSBBB',
+    '...DNNN',
+    '...DNNN',
+    '....DND',
+  ]);
+  const KING = part(-4, -41, [
+    '..y.y.y',
+    '..gygyg',
+    '..ogggo',
+    '..hffff',
+    '..hffkf',
+    '..hFffff',
+    '...FFFF',
+    '...Ttu',
+    '..Ttuut',
+    '..Tttuu',
+    '..Ttttu',
+    '..TttTt',
+    '..TttTtt',
+    '..TtttTtf',
+    '..Tttt',
+    '..TTtt',
+    '..Tooo',
+    '.TTtttt',
+    '.TTTtttt',
+  ]);
+  // Variante inclinada al galope: cabeza y corona 1 px hacia delante.
+  const KING_LEAN = part(-4, -41, KING.rows.map((r, i) => (i < 7 ? '.' + r : r)));
+  const LEG = part(-1, -23, [
+    '.ppp',
+    '.pppp',
+    '.PPPp',
+    '...Pp',
+    '...Pp',
+    '...bb',
+    '...bb',
+    '...bbb',
+    '...ooo',
+  ]);
+  const EYE = [13, -24], EYE_LOW = [14, -9];       // para el parpadeo
+  const HAND = [5, -28], BIT = [16, -17], BIT_LOW = [15, -3];
+
+  // ================================================================ rejilla y rasterizado
+  function grid(w, h) {
+    const a = Array.from({ length: h }, () => new Array(w).fill('.'));
+    return {
+      w, h,
+      set(x, y, ch) { x = Math.round(x); y = Math.round(y); if (x >= 0 && y >= 0 && x < w && y < h) a[y][x] = ch; },
+      rows() { return a.map((r) => r.join('')); },
+    };
+  }
+  // Relleno de polígono por filas (centros de píxel), sin antialiasing.
+  function polyFill(g, pts, ch) {
+    let y0 = Infinity, y1 = -Infinity;
+    for (const q of pts) { y0 = Math.min(y0, q[1]); y1 = Math.max(y1, q[1]); }
+    for (let y = Math.floor(y0); y <= Math.ceil(y1); y++) {
+      const yc = y + 0.5, xs = [];
+      for (let i = 0; i < pts.length; i++) {
+        const a = pts[i], b = pts[(i + 1) % pts.length];
+        if ((a[1] <= yc && b[1] > yc) || (b[1] <= yc && a[1] > yc)) xs.push(a[0] + ((yc - a[1]) / (b[1] - a[1])) * (b[0] - a[0]));
+      }
+      xs.sort((m, n) => m - n);
+      for (let k = 0; k + 1 < xs.length; k += 2) for (let x = Math.round(xs[k]); x < Math.round(xs[k + 1]); x++) g.set(x, y, ch);
+    }
+  }
+
+  // ---- Crin: mechones sobre la línea de la cruz; con viento se levantan y se van hacia atrás.
+  const CREST = [[1, -22], [2, -23], [3, -24], [4, -24], [5, -25], [6, -25], [7, -26], [8, -26], [9, -27], [10, -27], [11, -28], [12, -28], [13, -28]];
+  const CREST_LOW = [[2, -23], [3, -24], [4, -24], [5, -25], [6, -25], [7, -24], [8, -24], [9, -24], [10, -23], [11, -22], [12, -21], [13, -19], [14, -17]];
+  const LOCK = [2, 1, 1, 2, 3, 1, 1, 2, 1, 0, 1, 0, 0]; // largo extra de cada mechón
+  function manePart(crest, lift, ph) {
+    const gx = -4, gy = -36, g = grid(22, 22);
+    crest.forEach(([x, cy], i) => {
+      const up = lift > 0 ? Math.max(1, Math.round(lift * (1.8 + Math.sin(x * 1.3 + ph) * 1.3))) : 0;
+      const ext = lift > 0 ? (LOCK[i] >> 1) : LOCK[i];
+      const top = cy - 1 - up, bot = cy + 1 + ext;
+      for (let y = top; y <= bot; y++) {
+        const lean = y < cy - 1 ? Math.round((cy - 1 - y) * 0.9) : 0; // al viento las puntas van hacia atrás
+        const ch = y === top ? 'm' : y === bot && ext >= 2 ? 'K' : (y === top + 1 && (i & 1)) ? 'm' : 'M';
+        g.set(x - lean - gx, y - gy, ch);
+      }
+    });
+    return part(gx, gy, g.rows());
+  }
+
+  // ---- Cola: línea central que cae desde el nacimiento; ancho variable y mechones claro/oscuro.
+  function tailPart(lift, swish, ph) {
+    const gx = -28, gy = -28, g = grid(20, 32);
+    let x = -14, y = -21;
+    const th0 = U.lerp(1.5, 2.25, lift), th1 = U.lerp(0.1, 0.8, lift);
+    const len = U.lerp(19, 18, lift), step = 0.3, n = Math.ceil(len / step);
+    for (let i = 0; i <= n; i++) {
+      const t = i / n;
+      const th = th1 + (th0 - th1) * Math.pow(1 - t, U.lerp(5, 1.7, lift)) + swish * Math.sin(Math.PI * t) * 0.5 + lift * Math.sin(t * 8 - ph) * 0.32 * t;
+      const dx = -Math.sin(th), dy = Math.cos(th), nx = dy, ny = -dx;
+      // Fino en el nacimiento, abundante abajo y con la punta abierta.
+      const w = t < 0.08 ? 2 : Math.max(2, Math.round(2.2 + 3 * Math.sin(Math.PI * Math.min(1, 0.1 + t * 0.95))));
+      for (let j = 0; j < w; j++) {
+        const off = j - (w - 1) / 2;
+        const ch = j === 0 ? 'm' : j === w - 1 ? 'K' : (j === 2 && ((i >> 2) & 1)) ? 'm' : 'M';
+        g.set(x + nx * off - gx, y + ny * off - gy, ch);
+      }
+      x += dx * step; y += dy * step;
+    }
+    return part(gx, gy, g.rows());
+  }
+  // Variantes: [alzada, latigazo, fase]. 0 reposo, 1-2 latigazo, 3-5 paso, 6-8 galope.
+  const TAIL_V = [[0, 0.15, 0], [0, 0.8, 0], [0, -0.45, 0], [0.25, -0.15, 0], [0.25, 0.1, 0], [0.25, 0.3, 0], [1, 0, 0], [1, 0, 2.1], [1, 0, 4.2]];
+
+  // ---- Capa: polígono entre la pose en reposo (cae sobre la grupa) y al viento; pliegues radiales.
+  const CAPE_REST = [[-1, -34], [-3, -34.5], [-5, -31.5], [-7.5, -28], [-10, -25.5], [-12.5, -23.5], [-14, -21], [-13.5, -18.5], [-10.5, -18], [-7.5, -18.5], [-4.5, -19], [-2.5, -23], [-1, -30]];
+  const CAPE_FLY = [[-1, -34], [-3, -35], [-7, -35], [-11, -34.5], [-14.5, -33.5], [-17.5, -32.5], [-18.5, -30.5], [-15.5, -29], [-12, -27.5], [-8.5, -26.5], [-5, -25.5], [-2.5, -25], [-1, -30]];
+  function capePart(a, ph) {
+    const gx = -23, gy = -38, W = 24, H = 27, g = grid(W, H);
+    const pts = CAPE_REST.map((q, i) => {
+      const r = CAPE_FLY[i];
+      let x = U.lerp(q[0], r[0], a), y = U.lerp(q[1], r[1], a);
+      if (i >= 4 && i <= 10) { const s = Math.sin(ph * 2.1 + i * 1.3) * (0.3 + a * 1.1); y += s; x -= s * 0.5 * a; }
+      return [x - gx, y - gy];
+    });
+    polyFill(g, pts, 'c');
+    const rows = g.rows(), out = rows.map((r) => r.split(''));
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      if (rows[y][x] !== 'c') continue;
+      const up = y > 0 ? rows[y - 1][x] : '.', dn = y < H - 1 ? rows[y + 1][x] : '.';
+      const lx = x + gx + 2, ly = y + gy + 34; // relativo al hombro
+      const fold = Math.sin(Math.atan2(ly, -lx) * 10 + ph * 0.8 + Math.hypot(lx, ly) * 0.15);
+      out[y][x] = up === '.' ? 'v' : dn === '.' ? 'C' : fold > 0.55 ? 'C' : 'c';
+    }
+    return part(gx, gy, out.map((r) => r.join('')));
+  }
+
+  // ================================================================ juegos de sprites por pelaje
+  const sets = {};
+  function setFor(coat) {
+    coat = COATS[coat] ? coat : 'gray';
+    if (sets[coat]) return sets[coat];
+    const pal = Object.assign({}, COATS[coat], ROYAL);
+    const mk = (pt, name) => ({ s: U.sprite(pad(pt.rows), pal, 'horse.' + name), ax: pt.ax, ay: pt.ay });
+    const st = { pal, rear: [] };
+    st.body = mk(BODY, 'body');
+    st.neck = mk(NECK, 'neck');
+    st.head = mk(HEAD, 'head');
+    st.neckLow = mk(NECK_LOW, 'neckLow');
+    st.headLow = mk(HEAD_LOW, 'headLow');
+    st.king = mk(KING, 'king');
+    st.kingLean = mk(KING_LEAN, 'kingLean');
+    st.leg = mk(LEG, 'leg');
+    st.mane = [mk(manePart(CREST, 0, 0), 'mane0'), mk(manePart(CREST, 1, 0), 'mane1'), mk(manePart(CREST, 1, 2.6), 'mane2')];
+    st.maneLow = mk(manePart(CREST_LOW, 0, 0), 'maneLow');
+    st.tail = TAIL_V.map((v, i) => mk(tailPart(v[0], v[1], v[2]), 'tail' + i));
+    st.cape = [];
+    [0, 0.3, 0.62, 1].forEach((a) => { for (let k = 0; k < 3; k++) st.cape.push(mk(capePart(a, k * 2.1), 'cape')); });
+    // Colores de patas: [0] cercanas, [1] lejanas (más oscuras).
+    st.legCol = [
+      { ub: pal.S, uf: pal.B, sb: pal.w, sf: pal.W, hoof: pal.H },
+      { ub: pal.D, uf: pal.S, sb: U.shade(pal.w, 0.78), sf: pal.w, hoof: pal.K },
+    ];
+    return (sets[coat] = st);
+  }
+
+  // ================================================================ dibujo en coords locales
+  let OX = 0, OY = 0, DR = 1; // origen en pantalla y dirección del dibujo en curso
+  const at = (x, y, d) => { OX = x; OY = y; DR = d; };
+  function spr(ctx, pt, dx = 0, dy = 0) {
+    const s = pt.s;
+    ctx.drawImage(DR > 0 ? s.r : s.l, DR > 0 ? OX + pt.ax + dx : OX - pt.ax - dx - s.w, OY + pt.ay + dy);
+  }
+  function box(ctx, x, y, w, h, col) { ctx.fillStyle = col; ctx.fillRect(DR > 0 ? OX + x : OX - x - w, OY + y, w, h); }
+  // Sprite partido en dos mitades con distinto desplazamiento vertical (cabeceo del cuerpo).
+  function sprSplit(ctx, pt, splitX, dyBack, dyFront) {
+    const s = pt.s, cut = splitX - pt.ax, y = OY + pt.ay;
+    if (DR > 0) {
+      ctx.drawImage(s.r, 0, 0, cut, s.h, OX + pt.ax, y + dyBack, cut, s.h);
+      ctx.drawImage(s.r, cut, 0, s.w - cut, s.h, OX + pt.ax + cut, y + dyFront, s.w - cut, s.h);
+    } else {
+      ctx.drawImage(s.l, s.w - cut, 0, cut, s.h, OX - pt.ax - cut, y + dyBack, cut, s.h);
+      ctx.drawImage(s.l, 0, 0, s.w - cut, s.h, OX - pt.ax - s.w, y + dyFront, s.w - cut, s.h);
+    }
+  }
+  function line(ctx, x0, y0, x1, y1, col) {
+    ctx.fillStyle = col;
+    x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+    const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+    let err = dx - dy;
+    for (let n = 0; n < 200; n++) {
+      ctx.fillRect(DR > 0 ? OX + x0 : OX - x0 - 1, OY + y0, 1, 1);
+      if (x0 === x1 && y0 === y1) break;
+      const e2 = 2 * err;
+      if (e2 > -dy) { err -= dy; x0 += sx; }
+      if (e2 < dx) { err += dx; y0 += sy; }
+    }
+  }
+
+  // ================================================================ patas (IK de dos segmentos)
+  // rx/ry = raíz (columna izquierda de la pata de 2 px); bend +1 rodilla adelante, -1 corvejón atrás.
+  const LEGS = {
+    HF: { rx: -13, ry: -11, l1: 5.8, l2: 6, bend: -1, far: 1 },
+    FF: { rx: 3, ry: -11, l1: 5.5, l2: 5.6, bend: 1, far: 1 },
+    HN: { rx: -11, ry: -11, l1: 5.8, l2: 6, bend: -1, far: 0 },
+    FN: { rx: 5, ry: -11, l1: 5.5, l2: 5.6, bend: 1, far: 0 },
+  };
+  function ik(rx, ry, fx, fy, l1, l2, bend) {
+    const dx = fx - rx, dy = fy - ry, d = Math.hypot(dx, dy);
+    if (d >= l1 + l2 - 0.01 || d < 0.01) { const k = l1 / (l1 + l2); return [rx + dx * k, ry + dy * k]; }
+    const a = (l1 * l1 - l2 * l2 + d * d) / (2 * d), h = Math.sqrt(Math.max(0, l1 * l1 - a * a));
+    const ux = dx / d, uy = dy / d;
+    return [rx + ux * a + uy * h * bend, ry + uy * a - ux * h * bend];
+  }
+  // Segmento de 2 px: columna trasera/delantera (o fila inferior/superior si es casi horizontal).
+  // thick = píxeles iniciales con una tercera columna de músculo (delante en la mano, detrás en la pata).
+  function seg(ctx, ax, ay, bx, by, cb, cf, sock, sb, sf, thick, side) {
+    const dx = bx - ax, dy = by - ay, n = Math.max(1, Math.round(Math.max(Math.abs(dx), Math.abs(dy))));
+    const vert = Math.abs(dy) >= Math.abs(dx);
+    for (let i = 0; i <= n; i++) {
+      const x = Math.round(ax + (dx * i) / n), y = Math.round(ay + (dy * i) / n);
+      const s = i > n - sock, b = s ? sb : cb, f = s ? sf : cf;
+      if (vert) {
+        box(ctx, x, y, 1, 1, b); box(ctx, x + 1, y, 1, 1, f);
+        if (i < thick) box(ctx, side > 0 ? x + 2 : x - 1, y, 1, 1, side > 0 ? f : b);
+      } else { box(ctx, x, y, 1, 1, f); box(ctx, x, y + 1, 1, 1, b); }
+    }
+  }
+  function drawLeg(ctx, st, key, pose, dyRoot) {
+    const L = LEGS[key], c = st.legCol[L.far];
+    const ry = L.ry + dyRoot, fx = L.rx + pose[0], fy = -pose[1];
+    const [jx, jy] = ik(L.rx, ry, fx, fy, L.l1, L.l2, L.bend);
+    seg(ctx, L.rx, ry, jx, jy, c.ub, c.uf, 0, 0, 0, L.bend > 0 ? 3 : 4, L.bend);
+    seg(ctx, jx, jy, fx, fy, c.ub, c.uf, 4, c.sb, c.sf, 0, 0);
+    const hx = Math.round(fx), hy = Math.round(fy);
+    if (Math.abs(fx - jx) > Math.abs(fy - jy) * 1.3) box(ctx, hx - (fx < jx ? 1 : 0), hy, 2, 2, c.hoof); // casco doblado
+    else { box(ctx, hx, hy + 1, 2, 1, c.hoof); box(ctx, hx, hy + 2, 3, 1, c.hoof); }
+  }
+
+  // ================================================================ tablas de marcha
+  // [dx del casco respecto a la raíz, alzada] por frame propio de la pata (0 = apoyo recién puesto).
+  // Paso: 4 frames de apoyo (4 px/frame = zancada 32) y 4 de vuelo; la mano dobla la rodilla al alzarse.
+  const WALK_F = [[6, 0], [2, 0], [-2, 0], [-6, 0], [-5, 3], [-1, 4], [3, 3], [6, 1]];
+  const WALK_H = [[6, 0], [2, 0], [-2, 0], [-6, 0], [-4, 2], [-1, 3], [3, 2], [5, 1]];
+  const GAL_F = [[5.4, 0], [0, 0], [-5.4, 0], [-9, 2], [-7, 6], [-1, 8], [7, 5], [10, 2]];
+  const GAL_H = [[5.4, 0], [0, 0], [-5.4, 0], [-9, 2], [-6, 5], [0, 6], [6, 4], [9, 1]];
+  const OFF = { walk: { HN: 0, FN: 2, HF: 4, FF: 6 }, gallop: { HN: 0, HF: 1, FF: 3, FN: 4 } };
+  const STRIDE_W = 32, STRIDE_G = 43;
+  const WALK_DY = [0, -1, -1, 0, 0, -1, -1, 0], WALK_HEAD = [0, 0, 1, 1, 0, 0, 1, 1];
+  const GAL_DR = [0, 1, 1, 0, 0, -1, -1, -1], GAL_DF = [-1, -1, 0, 0, 1, 1, 0, -1];
+  const GAL_HEAD = [0, 0, 1, 1, 0, 0, -1, -1], GAL_K = [0, 1, 0, 0, 0, 1, 0, 0];
+  const IDLE_LEGS = { HF: [-1, 0], FF: [-1, 0], HN: [1, 0], FN: [1, 0] };
+  const GRAZE_LEGS = { HF: [-1, 0], FF: [-3, 0], HN: [1, 0], FN: [2, 0] };
+  // Encabritarse: ángulo de cada frame, secuencia (10 fps) y manos recogidas.
+  const REAR_ANG = [15, 25, 35, 30, 20];
+  const REAR_SEQ = [0, 1, 2, 2, 2, 3, 4];
+  const REAR_LEN = REAR_SEQ.length / 10;
+  const REAR_FORE = [
+    { FN: [-2, 6], FF: [0, 4] }, { FN: [-1, 8], FF: [-3, 6] }, { FN: [1, 8], FF: [-2, 8] },
+    { FN: [-1, 7], FF: [1, 7] }, { FN: [-2, 5], FF: [-1, 6] },
+  ];
+  const REAR_HIND = { HN: [2, 0], HF: [0, 0] };
+
+  // slide = px que el cuerpo ya avanzó dentro del frame: los cascos apoyados retroceden lo mismo y quedan quietos en el mundo.
+  function gaitLegs(TF, TH, off, f, slide = 0) {
+    const L = {};
+    for (const k in LEGS) {
+      const q = (k[0] === 'F' ? TF : TH)[(f - off[k] + 8) & 7];
+      L[k] = q[1] === 0 && slide ? [q[0] - slide, 0] : q;
+    }
+    return L;
+  }
+  // Pose = todo lo necesario para dibujar un frame (la usan el juego y la hoja de depuración).
+  function makePose(anim, f, o = {}) {
+    const pz = { anim, f, dyR: 0, dyF: 0, dyN: 0, dyH: 0, dyK: 0, legs: IDLE_LEGS, tail: 0, mane: 0, cape: 0, low: false, blink: !!o.blink, pant: false, lean: false };
+    if (anim === 'walk') {
+      pz.dyR = pz.dyF = pz.dyK = WALK_DY[f]; pz.dyH = WALK_HEAD[f];
+      pz.legs = gaitLegs(WALK_F, WALK_H, OFF.walk, f, o.slide);
+      pz.tail = 3 + [1, 2, 2, 1, 1, 0, 0, 1][f]; pz.cape = o.cape ?? 3 + (f >> 1) % 3;
+    } else if (anim === 'gallop') {
+      pz.dyR = GAL_DR[f]; pz.dyF = GAL_DF[f]; pz.dyH = GAL_HEAD[f]; pz.dyK = GAL_DF[f] + GAL_K[f];
+      pz.legs = gaitLegs(GAL_F, GAL_H, OFF.gallop, f, o.slide);
+      pz.tail = 6 + (o.tph ?? f % 3); pz.mane = 1 + (o.mph ?? (f >> 1) & 1); pz.cape = o.cape ?? 9 + f % 3; pz.lean = true;
+    } else if (anim === 'graze') {
+      pz.low = true; pz.dyH = f; pz.legs = GRAZE_LEGS; pz.tail = o.swish ?? 0; pz.cape = o.cape ?? 0;
+    } else if (anim === 'pant') {
+      pz.dyN = f; pz.dyH = 1 + f; pz.pant = f === 1; pz.cape = o.cape ?? 0;
+    } else if (anim === 'idle') {
+      pz.tail = o.swish ?? 0; pz.cape = o.cape ?? 0; pz.dyH = o.nod ? 1 : 0; // cabeceo ocasional
+    }
+    return pz;
+  }
+
+  // ================================================================ composición del jinete
+  function drawNeckHead(ctx, st, pz) {
+    const d = pz.dyF;
+    if (pz.low) {
+      spr(ctx, st.neckLow, 0, d); spr(ctx, st.maneLow, 0, d); spr(ctx, st.headLow, 0, d + pz.dyH);
+      if (pz.blink) box(ctx, EYE_LOW[0], EYE_LOW[1] + d + pz.dyH, 1, 1, st.pal.S);
+    } else {
+      spr(ctx, st.neck, 0, d + pz.dyN); spr(ctx, st.mane[pz.mane], 0, d + pz.dyN); spr(ctx, st.head, 0, d + pz.dyH);
+      if (pz.blink) box(ctx, EYE[0], EYE[1] + d + pz.dyH, 1, 1, st.pal.S);
+      if (pz.pant) { box(ctx, 16, -15 + d + pz.dyH, 2, 1, st.pal.E); box(ctx, 18, -14 + d + pz.dyH, 2, 1, st.pal.D); } // boca abierta
+    }
+  }
+  function drawRider(ctx, st, pz) {
+    const d = pz.dyK;
+    spr(ctx, st.cape[pz.cape], 0, d);
+    spr(ctx, pz.lean ? st.kingLean : st.king, 0, d);
+    spr(ctx, st.leg, 0, d);
+  }
+  function drawReins(ctx, st, pz) {
+    const b = pz.low ? BIT_LOW : BIT;
+    line(ctx, HAND[0], HAND[1] + pz.dyK, b[0], b[1] + pz.dyF + pz.dyH, st.pal.h);
+  }
+  function drawHorse(ctx, x, y, dir, pz, st) {
+    at(x, y, dir);
+    if (pz.anim === 'rear') { spr(ctx, rearFrame(st, pz.f)); return; }
+    const L = pz.legs;
+    drawLeg(ctx, st, 'HF', L.HF, pz.dyR);
+    drawLeg(ctx, st, 'FF', L.FF, pz.dyF);
+    spr(ctx, st.tail[pz.tail], 0, pz.dyR);
+    sprSplit(ctx, st.body, -3, pz.dyR, pz.dyF);
+    if (pz.pant) box(ctx, -6, -11 + pz.dyF, 8, 1, st.pal.D); // flancos que se hinchan
+    drawLeg(ctx, st, 'HN', L.HN, pz.dyR);
+    drawLeg(ctx, st, 'FN', L.FN, pz.dyF);
+    drawNeckHead(ctx, st, pz);
+    drawRider(ctx, st, pz);
+    drawReins(ctx, st, pz);
+  }
+
+  // ---- Encabritarse: frames pre-renderizados y rotados con vecino más cercano.
+  function blitRot(dst, src, cx, cy, ang, tx, ty) {
+    const w = src.width, h = src.height, sd = src.getContext('2d').getImageData(0, 0, w, h).data;
+    const tmp = U.canvas(w, h), img = tmp.x.createImageData(w, h), d = img.data;
+    const cs = Math.cos(ang), sn = Math.sin(ang);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const X = x + 0.5 - tx, Y = y + 0.5 - ty;
+      const sx = Math.floor(X * cs - Y * sn + cx), sy = Math.floor(X * sn + Y * cs + cy);
+      if (sx < 0 || sy < 0 || sx >= w || sy >= h) continue;
+      const o = (sy * w + sx) * 4;
+      if (sd[o + 3] === 0) continue;
+      const q = (y * w + x) * 4;
+      d[q] = sd[o]; d[q + 1] = sd[o + 1]; d[q + 2] = sd[o + 2]; d[q + 3] = 255;
+    }
+    tmp.x.putImageData(img, 0, 0);
+    dst.drawImage(tmp.c, 0, 0);
+  }
+  function rearFrame(st, i) {
+    if (st.rear[i]) return st.rear[i];
+    const ang = (REAR_ANG[i] * Math.PI) / 180, CX = 32, CY = 56, PX = -10, PYv = -11;
+    const pz = makePose('idle', 0); pz.legs = Object.assign({}, REAR_HIND, REAR_FORE[i]); pz.mane = 1 + (i & 1); pz.tail = 0; pz.cape = 3 + (i % 3);
+    const rot = (x, y, a) => { const cs = Math.cos(a), sn = Math.sin(a), X = x - PX, Y = y - PYv; return [PX + X * cs + Y * sn, PYv - X * sn + Y * cs]; };
+    const saveO = [OX, OY, DR];
+    // Bloque del caballo (sin patas traseras ni cola), rotado entero sobre la cadera.
+    const A = U.canvas(64, 64);
+    at(CX, CY, 1);
+    drawLeg(A.x, st, 'FF', pz.legs.FF, 0);
+    spr(A.x, st.body);
+    drawLeg(A.x, st, 'FN', pz.legs.FN, 0);
+    drawNeckHead(A.x, st, pz);
+    // Jinete: gira menos para mantenerse erguido.
+    const B = U.canvas(64, 64);
+    drawRider(B.x, st, pz);
+    const out = U.canvas(64, 64), o = out.x;
+    drawLeg(o, st, 'HF', REAR_HIND.HF, 0);
+    const [tx, ty] = rot(-14.5, -20.5, ang);
+    spr(o, st.tail[0], Math.round(tx + 14.5), Math.round(ty + 20.5));
+    blitRot(o, A.c, CX + PX, CY + PYv, ang, CX + PX, CY + PYv);
+    drawLeg(o, st, 'HN', REAR_HIND.HN, 0);
+    const [sx, sy] = rot(0, -22, ang), ak = ang * 0.35;
+    blitRot(o, B.c, CX, CY - 22, ak, CX + sx, CY + sy);
+    // Riendas: de la mano (girada con el jinete) al bocado (girado con el caballo).
+    const hx = HAND[0], hy = HAND[1] + 22;
+    const hand = [sx + hx * Math.cos(ak) + hy * Math.sin(ak), sy - hx * Math.sin(ak) + hy * Math.cos(ak)];
+    const bit = rot(BIT[0], BIT[1], ang);
+    line(o, hand[0], hand[1], bit[0], bit[1], st.pal.h);
+    [OX, OY, DR] = saveO;
+    return (st.rear[i] = { s: U.withFlip(out.c), ax: -CX, ay: -CY });
+  }
+
+  // ================================================================ estado del jugador
+  const p = K.player = {
+    x: typeof P.x === 'number' ? P.x : 1160, y: GY, dir: P.dir === -1 ? -1 : 1, vx: 0, state: 'idle',
+    stamina: typeof P.stamina === 'number' ? U.clamp(P.stamina, 0, 1) : 1,
+    boost: typeof P.boost === 'number' ? Math.max(0, P.boost) : 0,
+  };
+  const LEFT = new Set(['KeyA', 'ArrowLeft']), RIGHT = new Set(['KeyD', 'ArrowRight']);
+  // Límite del mundo según la figura real (medida en todas las poses): cola a −28 px y hocico a +20 px
+  // del centro mirando a la derecha (espejo al revés). Con 30 px no se corta en ningún borde ni al girar.
+  const EDGE = 30;
+  const S = { phase: 0, frame: -1, still: 0, grazeT: -1, rearT: -1, tapDir: 0, tapT: -9, tapGallop: 0, prevWant: false, glow: 0, trailAcc: 0, trailK: 0, pose: makePose('idle', 0) };
+  const rng = U.mulberry32((K.seed | 0) + 2020);
+  const parts = []; // partículas: polvo, estela y destellos (x del mundo, y de pantalla)
+  const DUST = { cobble: '#A39E92', coast: '#C9BB93', farm: '#9C8561' };
+  // Estela del boost: por tiempo, no por frame (480/s = 8 por frame a 60 Hz), repartida en rotación entre
+  // 4 patas × 2 alturas. Se corta en TRAIL_CAP para dejar sitio al polvo de los cascos y a los destellos.
+  const MAX_PARTS = 320, TRAIL_CAP = 260, TRAIL_RATE = 480, LEG_KEYS = Object.keys(LEGS);
+
+  function spawn(q) { if (parts.length < MAX_PARTS) parts.push(q); }
+  // Posición del casco en el mundo a partir de coords locales.
+  const worldX = (lx) => p.x + (p.dir > 0 ? lx + 0.5 : -lx - 0.5);
+
+  function reward() {
+    p.stamina = 1; p.boost = C.boostSeconds; S.glow = 1.6;
+    for (let i = 0; i < 18; i++) {
+      spawn({ kind: 'spark', x: p.x + (rng() * 40 - 20), y: GY - 4 - rng() * 32, vx: (rng() - 0.5) * 6, vy: -5 - rng() * 9, life: 0.7 + rng() * 0.9, max: 1.6, seed: rng() * 10 });
+    }
+  }
+
+  function gamePose(st) {
+    const t = K.t, o = {}, fixed = P.frame !== undefined ? P.frame | 0 : -1;
+    const wind = (K.env && K.env.wind) || 0.3, spd = Math.abs(p.vx);
+    o.blink = t % 3.7 < 0.13;
+    const sw = t % 6.3; o.swish = sw < 0.22 ? 1 : sw < 0.45 ? 2 : 0;
+    o.nod = t % 5.3 > 4.9;
+    const lvl = spd < 1 ? 0 : spd <= C.walkSpeed + 0.5 ? 1 : spd < 70 ? 2 : 3;
+    o.cape = lvl * 3 + (Math.floor(t * (lvl === 0 ? 1 + wind * 3 : 3 + lvl * 3)) % 3);
+    o.tph = Math.floor(t * 9) % 3; o.mph = Math.floor(t * 10) % 2;
+    const fr = (n, fps) => (fixed >= 0 ? fixed % n : Math.floor(t * fps) % n);
+    if (st === 'walk' || st === 'gallop') {
+      if (fixed >= 0) return makePose(st, fixed & 7, o);
+      const ph8 = S.phase * 8, frac = ph8 - Math.floor(ph8), step = (st === 'gallop' ? STRIDE_G : STRIDE_W) / 8;
+      o.slide = p.dir * (Math.round(p.x) - Math.round(p.x - p.dir * frac * step));
+      return makePose(st, Math.floor(ph8) & 7, o);
+    }
+    if (st === 'graze') { o.swish = (t % 2.9) < 0.3 ? 1 : 0; return makePose('graze', fr(2, 5), o); }
+    if (st === 'pant') return makePose('pant', fr(2, 4), o);
+    if (st === 'rear') {
+      const k = fixed >= 0 ? fixed % 5 : P.state === 'rear' ? REAR_SEQ[Math.floor(t * 10) % REAR_SEQ.length] : REAR_SEQ[Math.min(REAR_SEQ.length - 1, Math.floor(S.rearT * 10))];
+      return makePose('rear', k, o);
+    }
+    return makePose('idle', 0, o);
+  }
+
+  function update(dt) {
+    const inp = K.input, F = P.state;
+    // Doble toque de la misma dirección en < 0.3 s: galope mientras se mantenga.
+    for (const tp of inp.taps) {
+      const d = RIGHT.has(tp.code) ? 1 : LEFT.has(tp.code) ? -1 : 0;
+      if (!d) continue;
+      if (d === S.tapDir && tp.t - S.tapT < 0.3) { S.tapGallop = d; S.tapDir = 0; } else { S.tapDir = d; S.tapT = tp.t; }
+    }
+    let dirIn = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
+    if (S.tapGallop && dirIn !== S.tapGallop) S.tapGallop = 0;
+    let want = dirIn !== 0 && (inp.gallop || S.tapGallop === dirIn);
+    if (F) { dirIn = F === 'walk' || F === 'gallop' ? p.dir : 0; want = F === 'gallop'; }
+    const canGallop = p.stamina > 0 || p.boost > 0 || !!F;
+    // Sin estamina, pedir galope hace que se encabrite.
+    if (S.rearT >= 0 && (S.rearT += dt) >= REAR_LEN) S.rearT = -1;
+    if (!F && S.rearT < 0 && want && !S.prevWant && !canGallop) { S.rearT = 0; p.vx = 0; }
+    S.prevWant = want;
+    const rearing = F === 'rear' || S.rearT >= 0;
+
+    // Velocidad: acelera a vmáx×4/s, frena a vmáx×5/s y solo gira cuando está detenido.
+    let target = 0;
+    if (!rearing && dirIn) {
+      if (dirIn !== p.dir && Math.abs(p.vx) < 1) { p.dir = dirIn; p.vx = 0; }
+      if (dirIn === p.dir) target = want && canGallop ? C.gallopSpeed : C.walkSpeed;
+    }
+    let sp = Math.abs(p.vx);
+    if (target > sp) sp = Math.min(target, sp + target * C.accelMul * dt);
+    else sp = Math.max(target, sp - (sp > C.walkSpeed + 0.5 ? C.gallopSpeed : C.walkSpeed) * C.decelMul * dt);
+    p.vx = sp * p.dir;
+    p.x += p.vx * dt;
+    if (p.x < EDGE || p.x > K.WORLD_W - EDGE) {
+      p.x = U.clamp(p.x, EDGE, K.WORLD_W - EDGE);
+      if (F) p.dir = -p.dir; else p.vx = 0;
+    }
+
+    // Fase de la marcha según la distancia recorrida: los cascos no patinan.
+    const spd = Math.abs(p.vx), galloping = spd > C.walkSpeed + 0.5;
+    S.phase = (S.phase + (spd * dt) / (galloping ? STRIDE_G : STRIDE_W)) % 1;
+
+    // Estamina: el galope la gasta (salvo con boost); a 0 se encabrita y solo camina.
+    if (galloping && !F) {
+      if (p.boost > 0) p.boost = Math.max(0, p.boost - dt);
+      else if (p.stamina > 0) {
+        p.stamina = Math.max(0, p.stamina - dt / C.staminaGallopSeconds);
+        if (p.stamina === 0) { S.rearT = 0; p.vx = 0; }
+      }
+    }
+
+    // Estado
+    let st;
+    if (rearing || S.rearT >= 0) { st = 'rear'; S.still = 0; S.grazeT = -1; }
+    else if (spd > 0.5) { st = galloping ? 'gallop' : 'walk'; S.still = 0; S.grazeT = -1; }
+    else {
+      S.still += dt;
+      if (F) st = F === 'walk' || F === 'gallop' ? 'idle' : F;
+      else {
+        const ter = K.terrainAt(p.x), grassy = ter === 'meadow' || ter === 'grass';
+        const hungry = p.stamina < 1 || p.boost < C.boostSeconds - 0.5;
+        if (S.grazeT >= 0) { if ((S.grazeT += dt) >= C.grazeSeconds) { S.grazeT = -1; reward(); } }
+        else if (S.still >= C.grazeDelay && grassy && hungry) S.grazeT = 0;
+        st = S.grazeT >= 0 ? 'graze' : p.stamina < C.pantThreshold ? 'pant' : 'idle';
+      }
+    }
+    p.state = st;
+    const pz = (S.pose = gamePose(st));
+
+    // Polvo al apoyar en el galope y estela blanca con boost.
+    if (pz.anim === 'gallop' && pz.f !== S.frame) {
+      const ter = K.terrainAt(p.x), col = DUST[ter] || '#A89372';
+      for (const k in LEGS) {
+        if (((pz.f - OFF.gallop[k] + 8) & 7) !== 0) continue;
+        const lx = LEGS[k].rx + pz.legs[k][0] + 1;
+        for (let i = 0; i < 2; i++) spawn({ kind: 'dust', x: worldX(lx) + (rng() - 0.5) * 3, y: GY + 1 - rng() * 2, vx: -p.dir * (6 + rng() * 14), vy: -8 - rng() * 12, life: 0.3 + rng() * 0.3, max: 0.6, col, s: rng() < 0.3 ? 2 : 1 });
+      }
+    }
+    S.frame = pz.anim === 'gallop' || pz.anim === 'walk' ? pz.f : -1;
+    if (p.boost > 0 && spd > 1 && pz.legs) {
+      S.trailAcc += dt * TRAIL_RATE;
+      const n = S.trailAcc | 0;
+      S.trailAcc -= n;
+      for (let j = 0; j < n && parts.length < TRAIL_CAP; j++) {
+        const slot = S.trailK++ & 7, k = LEG_KEYS[slot >> 1], i = slot & 1, lp = pz.legs[k];
+        const lx = LEGS[k].rx + lp[0] + (rng() < 0.5 ? 0 : 1);
+        spawn({ kind: 'trail', x: worldX(lx), y: GY - lp[1] - 1 - i * 2 - Math.floor(rng() * 3), vx: 0, vy: -3, life: 0.3 + rng() * 0.25, max: 0.55 });
+      }
+    } else S.trailAcc = 0;
+    // Brillo suave mientras duran los destellos.
+    if (S.glow > 0) { S.glow -= dt; K.lights.push({ type: 'firefly', x: p.x, y: GY - 18, power: Math.min(1, S.glow) }); }
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const q = parts[i];
+      if ((q.life -= dt) <= 0) { parts[i] = parts[parts.length - 1]; parts.pop(); continue; }
+      q.x += q.vx * dt; q.y += q.vy * dt;
+      if (q.kind === 'dust') q.vy += 45 * dt; else if (q.kind === 'spark') q.vx *= 0.97;
+    }
+  }
+
+  function drawParticles(ctx, front) {
+    for (const q of parts) {
+      if ((q.kind === 'spark') !== front) continue;
+      const a = q.life / q.max, sx = K.sx(q.x), sy = Math.round(q.y);
+      if (sx < -4 || sx > K.W + 4) continue;
+      if (q.kind === 'spark') {
+        ctx.globalAlpha = Math.min(1, a * 1.8);
+        ctx.fillStyle = '#FFF6CF'; ctx.fillRect(sx, sy, 1, 1);
+        if (a > 0.3 && (K.t * 10 + q.seed) % 2 < 1.1) {
+          ctx.fillStyle = '#FFD66E';
+          ctx.fillRect(sx - 1, sy, 1, 1); ctx.fillRect(sx + 1, sy, 1, 1); ctx.fillRect(sx, sy - 1, 1, 1); ctx.fillRect(sx, sy + 1, 1, 1);
+        }
+      } else if (q.kind === 'trail') {
+        ctx.globalAlpha = Math.min(1, a * 1.8); ctx.fillStyle = a > 0.5 ? '#FFFFFF' : '#DCE8FF'; ctx.fillRect(sx, sy, 1, 1);
+      } else {
+        ctx.globalAlpha = a * 0.75; ctx.fillStyle = q.col; ctx.fillRect(sx, sy, q.s, q.s);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  K.register('horse', {
+    order: 20,
+    init() { const st = setFor(C.horseCoat); for (let i = 0; i < REAR_ANG.length; i++) rearFrame(st, i); },
+    update,
+    drawPlayer(ctx) {
+      const x = K.sx(p.x);
+      if (x < -48 || x > K.W + 48) return;
+      drawParticles(ctx, false);
+      drawHorse(ctx, x, GY, p.dir, S.pose, setFor(C.horseCoat));
+      drawParticles(ctx, true);
+    },
+  });
+
+  // ================================================================ hoja de depuración (?view=horse)
+  K.views.horse = (ctx) => {
+    const rng8 = [0, 1, 2, 3, 4, 5, 6, 7];
+    ['gray', 'chestnut'].forEach((coat, ci) => {
+      const st = setFor(coat);
+      const rows = [
+        rng8.map((f) => makePose('walk', f)).concat([makePose('idle', 0), makePose('idle', 0, { blink: true, swish: 1 })]),
+        rng8.map((f) => makePose('gallop', f)).concat([makePose('graze', 0), makePose('graze', 1)]),
+        [makePose('pant', 0), makePose('pant', 1)].concat([0, 1, 2, 3, 4].map((f) => makePose('rear', f)), [makePose('idle', 0, { swish: 2, cape: 2 }), makePose('graze', 0, { swish: 1, blink: true })]),
+      ];
+      rows.forEach((row, ri) => row.forEach((pz, k) => drawHorse(ctx, 24 + k * 48, 42 + (ci * 3 + ri) * 45, 1, pz, st)));
+    });
+  };
+})(window.K);
+
+</script>
+<script>
+/* src/30_water.js */
+// 30_water.js — el río: reflejo invertido de las filas 110–189, ondas "a saltos" a 10 Hz,
+// columnas de luz cálida, orilla, destellos de día y peces que saltan.
+(function (K) {
+  const U = K.util, C = K.CONFIG, P = K.params;
+  const W = K.W, WY = K.WATER_Y, WH = K.H - K.WATER_Y; // 80 filas de agua
+  const SRC_Y = WY - WH;                                // 110: primera fila que se refleja
+  const CW = 16, NCX = W / CW;                          // trozos de 16×1 px, 30 por fila
+  const BASE = '#686C53', LIGHT = '#FC8F53';
+
+  // Multiplica un color por otro (lo dibujado tras la oscuridad no queda oscurecido).
+  const mul = (hex, m) => { const a = U.rgb(hex), b = U.rgb(m); return U.hex(a[0] * b[0] / 255, a[1] * b[1] / 255, a[2] * b[2] / 255); };
+
+  // ---- Lienzos de trabajo
+  const still = U.canvas(W, WH);                  // agua compuesta sin ondas
+  const out = still.x.createImageData(W, WH);     // franja final con ondas
+  const out32 = new Uint32Array(out.data.buffer);
+
+  // Oscurecimiento hacia abajo: hasta 40 % de negro en bandas de 4 px.
+  const bands = U.canvas(W, WH);
+  { const nb = WH / 4;
+    for (let i = 0; i < nb; i++) { bands.x.fillStyle = `rgba(0,0,0,${(0.4 * i / (nb - 1)).toFixed(3)})`; bands.x.fillRect(0, i * 4, W, 4); } }
+
+  // ---- Columnas de luz: destello vertical hecho de guiones horizontales (uno por fila),
+  // núcleo intenso en el centro, bordes escalonados y huecos que crecen hacia abajo.
+  function makeColumn(w, h, seed, col) {
+    const { c, x } = U.canvas(w, h);
+    const img = x.createImageData(w, h), d = img.data, [r, g, b] = U.rgb(col);
+    const half = w / 2;
+    for (let y = 0; y < h; y++) {
+      const v = y / (h - 1);
+      const iv = Math.min(1, (y + 2) / 6) * Math.pow(1 - v, 0.75);
+      const gap = U.hash(y, 1, seed) < 0.1 + 0.4 * v;      // fila partida por una ola
+      const L = half * (1 - 0.5 * v) * (0.5 + 0.5 * U.hash(y, 2, seed)); // media longitud del guion
+      const off = w > 8 ? Math.round((U.hash(y, 3, seed) - 0.5) * 2) : 0;
+      for (let i = 0; i < w; i++) {
+        const e = Math.abs(i + 0.5 - half - off) / Math.max(1, L);
+        if (e >= 1) continue;
+        let a = iv * (e < 0.34 ? 1 : e < 0.7 ? 0.55 : 0.28);
+        if (gap) a *= e < 0.34 ? 0.45 : 0;
+        a = Math.round(a * 4) / 4; // 4 escalones de alfa
+        if (a <= 0) continue;
+        const o = (y * w + i) * 4;
+        d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = Math.round(a * 255);
+      }
+    }
+    x.putImageData(img, 0, 0);
+    return c;
+  }
+  // 3 variantes de cada columna que se alternan a 10 Hz (brillo "a saltos" aun sin viento).
+  const variants = (w, s, col) => [0, 1, 2].map((v) => makeColumn(w, 48, s + v * 101, col));
+  const COL_S = variants(8, 11, LIGHT), COL_L = variants(24, 23, LIGHT);
+  // Sin columna para las luciérnagas: son de 1 px y ya se ven en el reflejo (filas 110–189);
+  // una franja de 8×48 las haría parecer pilares fantasma.
+  const COLUMN = { torch: [COL_S, 1], fire: [COL_L, 1], moon: [COL_L, 1], sun: [COL_L, 1] };
+
+  // ---- Tabla de ondas: (dx, dy) por trozo de 16×1, ruido suave con celdas de ~32×4 px.
+  const NT = NCX * WH;
+  const TX = new Int8Array(NT), TY = new Int8Array(NT), TN = new Float32Array(NT);
+  const sparks = []; // destellos de día { x, y, w }
+  let tick = -1;
+  function buildTable(tk) {
+    const env = K.env, t = tk / 10, wind = env.wind, ox = K.camX * 1.5;
+    const day = U.clamp(1 - env.darkness / 0.12, 0, 1) * U.clamp((wind - 0.25) / 0.35, 0, 1);
+    const sunX = env.sunVis ? env.sunX : -9999;
+    sparks.length = 0;
+    for (let y = 0; y < WH; y++) {
+      const amp = 0.8 + 0.4 * y / (WH - 1); // 50 % mayor al fondo que arriba
+      const ax = wind * 6 * amp, ay = wind * 12 * amp;
+      const Y1 = (y - t * 5) / 4, Y2 = (y - t * 9) / 3; // deriva vertical lenta
+      for (let c = 0; c < NCX; c++) {
+        const X = (c * CW + 8 + ox) / 32;
+        const n = U.noise2(X + t * 0.04, Y1, 301) * 0.62 + U.noise2(X * 1.3 - t * 0.07, Y2, 302) * 0.38;
+        const m = U.noise2(X * 0.9 + 17, Y1 + 5, 303) * 0.62 + U.noise2(X * 1.4 + 9, Y2 - 3, 304) * 0.38;
+        const k = y * NCX + c;
+        TX[k] = Math.round(U.clamp((n - 0.5) * 3, -1, 1) * ax);
+        TY[k] = Math.round(U.clamp((m - 0.5) * 3, -1, 1) * ay);
+        TN[k] = n;
+        // Destellos de día donde el ruido supera un umbral; se agrupan bajo el sol.
+        if (day > 0 && y > 3) {
+          const cx = c * CW + 8, q = (cx - sunX) / 56, near = Math.exp(-q * q);
+          if (n > 0.75 - 0.13 * near && U.hash(c, y, tk) < 0.04 + 0.26 * near) {
+            const h = U.hash(c, y, tk + 7);
+            sparks.push({ x: c * CW + Math.floor(h * 13), y, w: 2 + (h > 0.6 ? 1 : 0) });
+          }
+        }
+      }
+    }
+  }
+
+  // ---- Peces: sprites pequeños (arriba, plano, abajo), salpicaduras y ondas.
+  const FP = { d: '#3F4C47', b: '#7E8C81', l: '#C4CABB', t: '#5B6961', e: '#9FAB9F', k: '#262D2A' };
+  const UP = ['........be', '......dkbl', '....ddbbl.', '...dbbl...', 't.dbl.....', '.tt.......'];
+  const FISH = {
+    up: U.sprite(UP, FP, 'pez arriba'),
+    flat: U.sprite(['...dd.....', 't.ddddddd.', '.tbbbbbkbe', 't..lllll..'], FP, 'pez plano'),
+    down: U.sprite(UP.slice().reverse(), Object.assign({}, FP, { d: FP.l, l: FP.d }), 'pez abajo'),
+  };
+  const SP = { w: '#E2E7DC', s: '#A9B8AE' };
+  const SPLASH = [
+    ['...........', '.....w.....', '....wsw....', '...ws.sw...', '..sss.sss..'],
+    ['...w...w...', '...........', '..w.....w..', '.ws.....sw.', 'ss.......ss'],
+    ['...........', '.w.......w.', '...........', 'w.........w', 's.........s'],
+  ].map((rows, i) => U.sprite(rows, SP, 'salpicadura ' + i));
+  // Ondas en la superficie: elipses planas 1 px que se abren.
+  const RIPPLE = [3, 5, 7, 9, 11].map((rx) => U.paint(rx * 2 + 1, 3, (x, w) => {
+    x.fillStyle = '#C9D0C4';
+    x.fillRect(2, 0, w - 4, 1); x.fillRect(0, 1, 2, 1); x.fillRect(w - 2, 1, 2, 1); x.fillRect(2, 2, w - 4, 1);
+  }));
+  const FXW = 64, FXH = 44, OX = 32, OY = 26; // lienzo del pez; (OX, OY) = punto de la superficie
+  const fx = U.canvas(FXW, FXH);
+  const fishes = [];
+  const rnd = U.mulberry32((K.seed ^ 0x51f15e) >>> 0);
+  let nextFish = 2 + rnd() * 4;
+  let forced = P.fish !== undefined ? { t: (P.sim ?? 1.5) - P.fish } : null; // ?fish=edad en s (capturas)
+
+  // El salto nunca sube por encima de la orilla (y - h ≥ WY + 4).
+  function spawnFish(x, y, age) {
+    const h = Math.min(7 + Math.floor(rnd() * 6), y - WY - 4);
+    fishes.push({ x, y, age, dir: rnd() < 0.5 ? -1 : 1, h, run: 10 + Math.floor(rnd() * 6), dur: 0.6 + rnd() * 0.2 });
+  }
+  function drawSplash(g, x, y, a) {
+    if (a < 0 || a >= 0.3) return;
+    const s = SPLASH[Math.floor(a / 0.1)];
+    g.drawImage(s.r, x - (s.w >> 1), y - s.h + 1);
+  }
+  function drawRipple(g, x, y, a) {
+    if (a < 0 || a >= 0.9) return;
+    const r = RIPPLE[Math.min(4, Math.floor(a / 0.18))];
+    g.globalAlpha = 0.55 * (1 - a / 0.9);
+    g.drawImage(r.r, x - (r.w >> 1), y - 1);
+    g.globalAlpha = 1;
+  }
+  function drawFish(ctx, f) {
+    const sx = K.sx(f.x);
+    if (sx < -FXW || sx > W + FXW) return;
+    const g = fx.x;
+    g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1;
+    g.clearRect(0, 0, FXW, FXH);
+    const x1 = OX + f.dir * f.run;
+    drawRipple(g, OX, OY, f.age - 0.05);
+    drawRipple(g, x1, OY, f.age - f.dur - 0.05);
+    const p = f.age / f.dur;
+    if (p >= 0 && p <= 1) {
+      const spr = p < 0.36 ? FISH.up : p > 0.64 ? FISH.down : FISH.flat;
+      const px = Math.round(OX + f.dir * f.run * p - spr.w / 2);
+      const py = Math.round(OY - 4 * f.h * p * (1 - p) - spr.h / 2);
+      // Reflejo tenue bajo la superficie
+      g.save(); g.beginPath(); g.rect(0, OY + 1, FXW, FXH - OY - 1); g.clip();
+      g.globalAlpha = 0.3; g.setTransform(1, 0, 0, -1, 0, 2 * OY + 1);
+      U.draw(g, spr, px, py, f.dir);
+      g.restore();
+      // El pez, recortado por la superficie
+      g.save(); g.beginPath(); g.rect(0, 0, FXW, OY); g.clip();
+      U.draw(g, spr, px, py, f.dir);
+      g.restore();
+    }
+    drawSplash(g, OX, OY, f.age);
+    drawSplash(g, x1, OY, f.age - f.dur + 0.03);
+    ctx.drawImage(U.multiplyTint(fx.c, K.env.mulColor), sx - OX, f.y - OY);
+  }
+
+  K.register('water', {
+    order: 30,
+    update(dt) {
+      for (const f of fishes) f.age += dt;
+      for (let i = fishes.length - 1; i >= 0; i--) if (fishes[i].age > fishes[i].dur + 1.1) fishes.splice(i, 1);
+      if (forced) {
+        if (K.t >= forced.t) {
+          const px = P.fishx ?? (K.player ? K.player.x + 70 : K.camX + 300);
+          spawnFish(px, WY + (P.fishy ?? 22), K.t - forced.t);
+          forced = null;
+        }
+        return;
+      }
+      if (P.fish !== undefined) return;
+      nextFish -= dt;
+      if (nextFish <= 0) {
+        nextFish = 3 + rnd() * 6;
+        spawnFish(K.camX + 40 + rnd() * (W - 80), WY + 14 + Math.floor(rnd() * 42), 0);
+      }
+    },
+    drawWater(ctx) {
+      const env = K.env;
+      const base = U.lerpColor(BASE, env.darkColor, env.darkness);
+      // 1. Agua sin ondas: color base, bandas, reflejo volteado y columnas de luz.
+      const s = still.x;
+      s.setTransform(1, 0, 0, 1, 0, 0);
+      s.globalCompositeOperation = 'source-over'; s.globalAlpha = 1;
+      s.fillStyle = base; s.fillRect(0, 0, W, WH);
+      s.drawImage(bands.c, 0, 0);
+      s.globalAlpha = C.reflectivity;
+      s.setTransform(1, 0, 0, -1, 0, WH); // la fila 189 queda pegada a la 190
+      s.drawImage(K.buf, 0, SRC_Y, W, WH, 0, 0, W, WH);
+      s.setTransform(1, 0, 0, 1, 0, 0);
+      const k = env.darkness * 0.8 * Math.min(1, env.wind * 10);
+      const tk = Math.floor(K.t * 10);
+      if (k > 0.003) {
+        s.globalCompositeOperation = 'lighter';
+        for (const L of K.lights) {
+          const def = COLUMN[L.type];
+          if (!def) continue;
+          const spr = def[0][(tk + Math.floor(U.hash(Math.round(L.x), 5) * 3)) % 3];
+          const x0 = (L.screen ? Math.round(L.x) : K.sx(L.x)) - (spr.width >> 1);
+          const top = Math.round((WY - L.y) * 0.3);
+          if (x0 + spr.width < -8 || x0 > W + 8 || top >= WH) continue;
+          // Parpadeo igual al del halo de la capa de oscuridad.
+          const flick = L.screen ? 0 : (U.noise1(K.t * 7 + L.x * 0.13, 11) - 0.5) * 0.3;
+          s.globalAlpha = U.clamp(k * def[1] * (L.power ?? 1) * (1 + flick), 0, 1);
+          s.drawImage(spr, x0, top);
+        }
+        s.globalCompositeOperation = 'source-over';
+      }
+      s.globalAlpha = 1;
+
+      // 2–3. Ondas: tabla regenerada a 10 Hz; cada trozo 16×1 se copia desplazado.
+      if (tk !== tick) { tick = tk; buildTable(tk); }
+      const src = new Uint32Array(s.getImageData(0, 0, W, WH).data.buffer);
+      for (let y = 0, k2 = 0; y < WH; y++) {
+        const row = y * W;
+        for (let c = 0; c < NCX; c++, k2++) {
+          let sy = y + TY[k2];
+          sy = sy < 0 ? 0 : sy >= WH ? WH - 1 : sy;
+          const srow = sy * W, x0 = c * CW, dx = TX[k2];
+          for (let i = 0; i < CW; i++) {
+            let sx = x0 + i - dx;
+            sx = sx < 0 ? 0 : sx >= W ? W - 1 : sx;
+            out32[row + x0 + i] = src[srow + sx];
+          }
+        }
+      }
+      ctx.putImageData(out, 0, WY);
+
+      // 4. Orilla: línea húmeda 1 px más oscura y espuma mínima que late con la tabla.
+      U.rect(ctx, 0, WY, W, 1, U.shade(base, 0.72));
+      ctx.fillStyle = U.lerpColor(base, mul('#C9CDB8', env.mulColor), 0.4);
+      ctx.globalAlpha = 0.35 + 0.45 * Math.min(1, env.wind);
+      for (let c = 0; c < NCX; c++) {
+        if (TN[c] < 0.6) continue;
+        const h = U.hash(c, tick, 9);
+        ctx.fillRect(c * CW + Math.floor(h * 9), WY + 1, 2 + Math.floor(U.hash(c, tick, 10) * 5), 1);
+      }
+      ctx.globalAlpha = 1;
+
+      // Destellos de día (invención propia).
+      const day = U.clamp(1 - env.darkness / 0.12, 0, 1) * U.clamp((env.wind - 0.25) / 0.35, 0, 1);
+      if (day > 0.02 && sparks.length) {
+        ctx.globalAlpha = 0.7 * day;
+        ctx.fillStyle = U.lerpColor(env.haze, '#FFFFFF', 0.5);
+        for (const p of sparks) ctx.fillRect(p.x, WY + p.y, p.w, 1);
+        ctx.globalAlpha = 1;
+      }
+    },
+    drawOverlay(ctx) {
+      for (const f of fishes) drawFish(ctx, f);
+    },
+  });
+
+  // Vista de depuración: ?view=water (columnas, peces y salpicaduras a escala 1).
+  K.views.water = (ctx) => {
+    COL_S.forEach((c, i) => ctx.drawImage(c, 4 + i * 10, 10));
+    COL_L.forEach((c, i) => ctx.drawImage(c, 4 + i * 28, 62));
+    let x = 60;
+    for (const s of [FISH.up, FISH.flat, FISH.down]) { U.draw(ctx, s, x, 12, 1); U.draw(ctx, s, x, 24, -1); x += 14; }
+    x = 60;
+    for (const s of SPLASH) { U.draw(ctx, s, x, 40, 1); x += 14; }
+    x = 60;
+    for (const r of RIPPLE) { U.draw(ctx, r, x, 52, 1); x += r.w + 3; }
+  };
+})(window.K);
+
+</script>
+<script>
+/* src/40_light.js */
+// 40_light.js — ciclo día/noche, cielo, sol y luna, estrellas, oscuridad con halos,
+// luciérnagas y número del día. Publica K.env para el resto de módulos.
+(function (K) {
+  const U = K.util, C = K.CONFIG, P = K.params;
+  const W = K.W, H = K.H;
+  const PH = C.phases;
+  const CYCLE = PH.reduce((s, p) => s + p.len, 0);
+  const START = []; { let a = 0; for (const p of PH) { START.push(a); a += p.len; } }
+  const NIGHT = PH.findIndex((p) => p.name === 'night');
+  const SUN_SPAN = CYCLE - PH[NIGHT].len; // amanecer + día + atardecer
+
+  const env = K.env = {
+    phase: 'day', phaseIndex: 1, phaseT: 0, cycleT: 0, day: 1,
+    sky: '#98BEEC', horizon: '#C4DAF1', haze: '#F3F1E8', sun: '#FFF766',
+    darkness: 0, darkColor: C.darkColor, mulColor: '#FFFFFF', wind: 1,
+    night: 0, bloodMoon: !!(P.blood || P.phase === 'blood'), timeScale: 1,
+    sunX: 0, sunY: 0, sunVis: 0, moonX: 0, moonY: 0, moonVis: 0,
+  };
+
+  // Tiempo absoluto del ciclo: 0 = inicio del primer amanecer.
+  let cycleT = C.startCycleT;
+  if (P.phase) {
+    const name = P.phase === 'blood' ? 'night' : P.phase;
+    const i = PH.findIndex((p) => p.name === name);
+    if (i >= 0) cycleT = START[i] + PH[i].blend + (PH[i].len - PH[i].blend) * 0.5;
+  }
+  if (P.cyc !== undefined) cycleT = P.cyc;
+
+  const presetOf = (i) => (PH[i].name === 'night' && env.bloodMoon ? C.presets.blood : C.presets[PH[i].name]);
+
+  function computeEnv() {
+    const t = U.mod(cycleT, CYCLE);
+    let i = 0;
+    for (let k = 0; k < PH.length; k++) if (t >= START[k]) i = k;
+    const u = t - START[i];
+    const cur = presetOf(i), prev = presetOf((i + PH.length - 1) % PH.length);
+    const b = U.smoothstep(u / PH[i].blend);
+    env.phase = PH[i].name; env.phaseIndex = i; env.phaseT = u; env.cycleT = t;
+    env.day = 1 + Math.floor(cycleT / CYCLE);
+    env.sky = U.lerpColor(prev.sky, cur.sky, b);
+    env.horizon = U.lerpColor(prev.horizon, cur.horizon, b);
+    env.haze = U.lerpColor(prev.haze, cur.haze, b);
+    env.sun = U.lerpColor(prev.sun, cur.sun, b);
+    env.darkness = U.lerp(prev.darkness, cur.darkness, b);
+    env.darkColor = U.lerpColor(prev.darkColor || C.darkColor, cur.darkColor || C.darkColor, b);
+    env.wind = P.wind !== undefined ? P.wind : U.lerp(prev.wind, cur.wind, b);
+    env.mulColor = U.lerpColor('#FFFFFF', env.darkColor, env.darkness);
+    // Cuánto "es de noche" (estrellas, luna, luciérnagas).
+    env.night = i === NIGHT ? b : (i + PH.length - 1) % PH.length === NIGHT ? 1 - b : 0;
+
+    // Sol y luna fijos a la pantalla, en arco.
+    if (i !== NIGHT) {
+      const s = U.mod(t - START[0], CYCLE) / SUN_SPAN;
+      env.sunX = Math.round(34 + s * (W - 68));
+      env.sunY = Math.round(178 - Math.sin(Math.PI * s) * 150);
+      env.sunVis = 1; env.moonVis = 0;
+    } else {
+      const s = u / PH[NIGHT].len;
+      env.moonX = Math.round(34 + s * (W - 68));
+      env.moonY = Math.round(178 - Math.sin(Math.PI * s) * 140);
+      env.moonVis = 1; env.sunVis = 0;
+    }
+  }
+
+  // ---- Estrellas (fijas a la pantalla)
+  const rs = U.mulberry32(991);
+  const stars = Array.from({ length: 80 }, () => ({ x: Math.floor(rs() * W), y: Math.floor(rs() * 118) + 2, p: rs() * 6.28, big: rs() < 0.12 }));
+
+  // ---- Luciérnagas: nacen sobre bosque y pradera
+  const flies = [];
+  { const rf = U.mulberry32(4242);
+    for (const z of K.MAP.zones) {
+      if (z.type !== 'forest' && z.type !== 'meadow') continue;
+      const n = Math.round((z.x1 - z.x0) / 22);
+      for (let k = 0; k < n; k++) flies.push({ x0: z.x0 + rf() * (z.x1 - z.x0), y0: 128 + rf() * 48, s: Math.floor(rf() * 1000), x: 0, y: 0, a: 0 });
+    }
+  }
+  let flyAmount = 0;
+
+  // ---- Halos escalonados (4–5 anillos) para la capa de oscuridad
+  function makeHalo(size, color, rings = 5) {
+    const { c, x } = U.canvas(size, size), r = size / 2;
+    x.globalAlpha = 0.24;
+    for (let k = 0; k < rings; k++) U.disc(x, r, r, Math.max(1, Math.floor(r * (1 - k / rings)) - 1), color);
+    return c;
+  }
+  const HALO = {
+    firefly: { c: makeHalo(64, '#C8FFD2', 4), power: 0.5 },
+    torch:   { c: makeHalo(128, '#FFE2B8'), power: 0.95 },
+    fire:    { c: makeHalo(256, '#FFD9A6'), power: 1 },
+  };
+  const dark = U.canvas(W, H);
+
+  // ---- Número del día en romanos
+  const ROMAN = {
+    I: ['###', '.#.', '.#.', '.#.', '.#.', '.#.', '###'],
+    V: ['#...#', '#...#', '#...#', '.#.#.', '.#.#.', '.#.#.', '..#..'],
+    X: ['#...#', '.#.#.', '.#.#.', '..#..', '.#.#.', '.#.#.', '#...#'],
+    L: ['###..', '.#...', '.#...', '.#...', '.#...', '.#..#', '#####'],
+    C: ['.###.', '#...#', '#....', '#....', '#....', '#...#', '.###.'],
+  };
+  const toRoman = (n) => {
+    const t = [[100, 'C'], [90, 'XC'], [50, 'L'], [40, 'XL'], [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']];
+    let s = ''; for (const [v, r] of t) while (n >= v) { s += r; n -= v; } return s;
+  };
+  function drawRoman(ctx, str, cx, y, col, s) {
+    const widths = [...str].map((ch) => ROMAN[ch][0].length);
+    const total = widths.reduce((a, b) => a + b, 0) * s + (str.length - 1) * 2 * s;
+    let x = Math.round(cx - total / 2);
+    ctx.fillStyle = col;
+    [...str].forEach((ch, k) => {
+      ROMAN[ch].forEach((row, ry) => { for (let rx = 0; rx < row.length; rx++) if (row[rx] === '#') ctx.fillRect(x + rx * s, y + ry * s, s, s); });
+      x += (widths[k] + 2) * s;
+    });
+  }
+  let bannerDay = 1, bannerT0 = 0;
+
+  K.register('light', {
+    order: 5,
+    key(code) {
+      if (code === 'KeyT') {
+        const t = U.mod(cycleT, CYCLE);
+        let i = 0; for (let k = 0; k < PH.length; k++) if (t >= START[k]) i = k;
+        const next = (i + 1) % PH.length;
+        cycleT += U.mod(START[next] - t, CYCLE) || CYCLE;
+      } else if (code === 'KeyY') {
+        env.bloodMoon = !env.bloodMoon;
+      } else if (code === 'KeyG') {
+        env.timeScale = env.timeScale === 1 ? C.fastForward : 1;
+      }
+    },
+    update(dt) {
+      if (!P.freeze) cycleT += dt * env.timeScale;
+      const prevDay = env.day;
+      computeEnv();
+      if (env.day !== prevDay) { bannerDay = env.day; bannerT0 = K.t; }
+
+      // Luces fijas a la pantalla (sol y luna) para las columnas del agua.
+      if (env.moonVis) K.lights.push({ type: 'moon', x: env.moonX, y: env.moonY, screen: true, power: 1 });
+      if (env.sunVis) K.lights.push({ type: 'sun', x: env.sunX, y: env.sunY, screen: true, power: 1 });
+
+      // Luciérnagas en noches sin viento.
+      flyAmount = env.night * U.clamp((0.4 - env.wind) / 0.15, 0, 1);
+      if (flyAmount > 0.02) {
+        const t = K.t;
+        for (const f of flies) {
+          f.x = f.x0 + (U.noise1(t * 0.25 + f.s, 3) - 0.5) * 60;
+          f.y = f.y0 + (U.noise1(t * 0.35 + f.s, 5) - 0.5) * 26;
+          f.a = U.clamp(Math.sin(t * 1.7 + f.s) * 1.6 - 0.2, 0, 1) * flyAmount;
+          if (f.a > 0.08 && K.onScreen(f.x, 1, 1, 40)) K.lights.push({ type: 'firefly', x: f.x, y: f.y, power: f.a });
+        }
+      }
+    },
+    drawSky(ctx) {
+      // Degradado de 3 colores: cielo → horizonte → bruma.
+      for (let y = 0; y < K.WATER_Y; y++) {
+        const col = y < 112 ? U.lerpColor(env.sky, env.horizon, Math.pow(y / 112, 1.3)) : U.lerpColor(env.horizon, env.haze, U.clamp((y - 112) / 64, 0, 1));
+        ctx.fillStyle = col; ctx.fillRect(0, y, W, 1);
+      }
+      // Estrellas
+      if (env.night > 0.02) {
+        for (const s of stars) {
+          const tw = 0.55 + 0.45 * Math.sin(K.t * 2.2 + s.p);
+          ctx.globalAlpha = env.night * tw * (s.y < 90 ? 1 : 0.5);
+          ctx.fillStyle = s.big ? '#FFFFFF' : '#CFE0FF';
+          ctx.fillRect(s.x, s.y, 1, 1);
+          if (s.big && tw > 0.8) { ctx.fillRect(s.x - 1, s.y, 3, 1); ctx.fillRect(s.x, s.y - 1, 1, 3); }
+        }
+        ctx.globalAlpha = 1;
+      }
+      // Sol
+      if (env.sunVis) {
+        ctx.globalAlpha = 0.18; U.disc(ctx, env.sunX, env.sunY, 16, env.sun);
+        ctx.globalAlpha = 0.3; U.disc(ctx, env.sunX, env.sunY, 12, env.sun);
+        ctx.globalAlpha = 1; U.disc(ctx, env.sunX, env.sunY, 9, env.sun);
+        U.disc(ctx, env.sunX - 2, env.sunY - 2, 4, U.lerpColor(env.sun, '#FFFFFF', 0.45));
+      }
+      // Luna
+      if (env.moonVis) {
+        const mc = env.sun;
+        ctx.globalAlpha = 0.14 * env.night; U.disc(ctx, env.moonX, env.moonY, 14, mc);
+        ctx.globalAlpha = 1; U.disc(ctx, env.moonX, env.moonY, 8, mc);
+        const cr = U.shade(mc, 0.82);
+        U.disc(ctx, env.moonX - 3, env.moonY - 2, 2, cr);
+        U.disc(ctx, env.moonX + 3, env.moonY + 2, 1, cr);
+        U.px(ctx, env.moonX + 1, env.moonY - 4, cr);
+        U.px(ctx, env.moonX - 2, env.moonY + 4, cr);
+      }
+    },
+    drawFront(ctx) {
+      if (flyAmount <= 0.02) return;
+      for (const f of flies) {
+        if (f.a <= 0.05) continue;
+        const sx = K.sx(f.x);
+        if (sx < -2 || sx > W + 2) continue;
+        ctx.globalAlpha = Math.min(1, f.a * 1.4);
+        ctx.fillStyle = '#7AFFA0';
+        ctx.fillRect(sx, Math.round(f.y), 1, 1);
+      }
+      ctx.globalAlpha = 1;
+    },
+    drawDarkness(ctx) {
+      if (env.darkness < 0.003) return;
+      const d = dark.x;
+      d.globalCompositeOperation = 'source-over';
+      d.globalAlpha = 1;
+      d.fillStyle = env.mulColor; d.fillRect(0, 0, W, H);
+      // Los halos (en screen) aclaran la capa de oscuridad alrededor de cada luz.
+      const strength = U.clamp(env.darkness / 0.2, 0, 1);
+      d.globalCompositeOperation = 'screen';
+      for (const L of K.lights) {
+        const h = HALO[L.type];
+        if (!h) continue;
+        const sx = L.screen ? L.x : K.sx(L.x);
+        const half = h.c.width / 2;
+        if (sx + half < 0 || sx - half > W) continue;
+        const flick = (U.noise1(K.t * 7 + L.x * 0.13, 11) - 0.5) * 0.15;
+        d.globalAlpha = U.clamp(h.power * (L.power ?? 1) * strength * (0.85 + flick), 0, 1);
+        d.drawImage(h.c, Math.round(sx - half), Math.round(L.y - half));
+      }
+      d.globalCompositeOperation = 'source-over';
+      d.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.drawImage(dark.c, 0, 0);
+      ctx.globalCompositeOperation = 'source-over';
+    },
+    drawUI(ctx) {
+      // Al amanecer aparece el número del día y se desvanece. También al arrancar.
+      const age = K.t - bannerT0;
+      if (age > 5 || P.shot) return;
+      const a = age < 0.8 ? age / 0.8 : age > 3.8 ? U.clamp((5 - age) / 1.2, 0, 1) : 1;
+      const str = toRoman(bannerDay);
+      ctx.globalAlpha = a * 0.55; drawRoman(ctx, str, W / 2 + 1, 43, '#1E1A1A', 2);
+      ctx.globalAlpha = a; drawRoman(ctx, str, W / 2, 42, '#F4E9D0', 2);
+      ctx.globalAlpha = 1;
+    },
+  });
+
+  computeEnv();
+  bannerDay = env.day;
+})(window.K);
+
+</script>
+<script>
+/* src/90_main.js */
+// 90_main.js — bucle principal, escalado entero, entrada, cámara, pasadas de dibujo y modos de prueba.
+(function (K) {
+  const U = K.util, C = K.CONFIG, P = K.params;
+  const W = K.W, H = K.H;
+
+  // Orden de pasadas. Cada módulo implementa las que necesite (todas opcionales).
+  const PASSES = [
+    ['sky', 'drawSky'],           // cielo, estrellas, sol y luna (fijos a pantalla)
+    ['parallax', 'drawParallax'], // montañas 0.05, colinas 0.15, árboles lejanos 0.3, juncos 0.5
+    ['ground', 'drawGround'],     // franja de tierra y hierba (170–190)
+    ['back', 'drawBack'],         // árboles del plano, edificios, fauna
+    ['player', 'drawPlayer'],     // caballo y monarca
+    ['front', 'drawFront'],       // hierba y juncos delante de los cascos, luciérnagas
+    ['darkness', 'drawDarkness'], // oscuridad × halos (multiply)
+    ['water', 'drawWater'],       // reflejo del río (190–270)
+    ['overlay', 'drawOverlay'],   // peces, niebla de primer plano (1.5)
+    ['ui', 'drawUI'],             // número del día
+  ];
+
+  const errEl = document.getElementById('err');
+  const outEl = document.getElementById('out');
+  const errors = new Set();
+  function report(where, e) {
+    const msg = `${where}: ${e && e.message ? e.message : e}`;
+    if (errors.has(msg)) return;
+    errors.add(msg);
+    console.error(msg, e && e.stack ? e.stack : '');
+    errEl.style.display = 'block';
+    errEl.textContent = [...errors].join('\n');
+  }
+  window.addEventListener('error', (e) => report(`${(e.filename || '').split('/').pop()}:${e.lineno}`, e.error || e.message));
+
+  // ?mods=light,horse limita los módulos activos (útil para probar uno solo).
+  const only = P.mods ? String(P.mods).split(',') : null;
+  const mods = () => Object.values(K.mods).filter((m) => !only || only.includes(m.name)).sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
+  let list = [];
+
+  // ---- Lienzos
+  const view = document.getElementById('view');
+  const vctx = view.getContext('2d');
+  K.buf = document.createElement('canvas');
+  K.buf.width = W; K.buf.height = H;
+  K.bctx = K.buf.getContext('2d', { willReadFrequently: true });
+  K.bctx.imageSmoothingEnabled = false;
+
+  let scale = 1;
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const fit = Math.min((innerWidth * dpr) / W, (innerHeight * dpr) / H);
+    scale = P.scale ? P.scale : Math.max(1, Math.floor(fit));
+    const dprUsed = P.scale ? 1 : dpr;
+    view.width = W * scale; view.height = H * scale;
+    let cssW = view.width / dprUsed, cssH = view.height / dprUsed;
+    // Ventana más pequeña que 480×270: se reduce para que quepa entera (los píxeles dejan de ser exactos).
+    if (!P.scale && fit < 1) { cssW = (W * fit) / dpr; cssH = (H * fit) / dpr; }
+    view.style.width = cssW + 'px'; view.style.height = cssH + 'px';
+    view.style.left = Math.floor((innerWidth - cssW) / 2) + 'px';
+    view.style.top = Math.floor((innerHeight - cssH) / 2) + 'px';
+    vctx.imageSmoothingEnabled = false;
+  }
+  window.addEventListener('resize', resize);
+
+  // ---- Entrada (por e.code, así Shift no cambia la tecla)
+  const held = new Set();
+  const GAME_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space', 'KeyA', 'KeyD', 'ShiftLeft', 'ShiftRight']);
+  window.addEventListener('keydown', (e) => {
+    if (GAME_KEYS.has(e.code)) e.preventDefault();
+    if (e.repeat) return;
+    held.add(e.code);
+    K.input.taps.push({ code: e.code, t: K.t });
+    if (e.code === 'KeyF') K.debug = !K.debug;
+    for (const m of list) if (m.key) { try { m.key(e.code); } catch (err) { report(m.name + '.key', err); } }
+  });
+  window.addEventListener('keyup', (e) => held.delete(e.code));
+  window.addEventListener('blur', () => held.clear());
+  function readInput() {
+    K.input.left = held.has('KeyA') || held.has('ArrowLeft');
+    K.input.right = held.has('KeyD') || held.has('ArrowRight');
+    K.input.gallop = held.has('ShiftLeft') || held.has('ShiftRight');
+  }
+  // Entrada simulada para capturas: ?hold=right,gallop
+  const simHold = P.hold ? String(P.hold).split(',') : [];
+
+  // ---- Cámara: horizontal, adelantada hacia donde mira el monarca, suavizada e independiente de los Hz.
+  function updateCamera(dt, snap) {
+    const p = K.player;
+    if (P.cam !== undefined) { K.camX = U.clamp(P.cam, 0, K.WORLD_W - W); }
+    else if (p) {
+      const target = U.clamp(p.x + C.camLead * (p.dir || 1) - W / 2, 0, K.WORLD_W - W);
+      if (snap) K.camX = target;
+      else {
+        const k = 1 - Math.pow(0.9, dt * 60), maxd = C.camMaxSpeed * dt;
+        K.camX += U.clamp((target - K.camX) * k, -maxd, maxd);
+      }
+    }
+    // Se redondea el desfase jinete-cámara, no cada posición por separado: así el jinete no tiembla 1 px.
+    const px = p ? p.x : K.camX;
+    K.camXi = Math.round(px) - Math.round(px - K.camX);
+  }
+
+  // ---- Paso de simulación
+  function step(dt) {
+    K.dt = dt; K.t += dt; K.frame++;
+    readInput();
+    for (const h of simHold) { if (h === 'left') K.input.left = true; if (h === 'right') K.input.right = true; if (h === 'gallop') K.input.gallop = true; }
+    K.lights.length = 0;
+    for (const m of list) if (m.update) { try { m.update(dt); } catch (e) { report(m.name + '.update', e); } }
+    updateCamera(dt, K.frame === 1);
+    K.input.taps.length = 0;
+  }
+
+  // ---- Grano de película
+  const grain = [];
+  { const rg = U.mulberry32(77);
+    for (let k = 0; k < 4; k++) {
+      const { c, x } = U.canvas(W, H), img = x.createImageData(W, H), d = img.data;
+      for (let i = 0; i < d.length; i += 4) { const v = rg() < 0.5 ? 0 : 255; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = Math.floor(rg() * 255); }
+      x.putImageData(img, 0, 0); grain.push(c);
+    }
+  }
+
+  // ---- Dibujo
+  const perf = {}; let timing = false;
+  function render() {
+    const ctx = K.bctx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+
+    const view = P.view && K.views[P.view];
+    if (view) {
+      ctx.fillStyle = P.bg ? '#' + P.bg : '#5C6B5A'; ctx.fillRect(0, 0, W, H);
+      try { view(ctx, K.t); } catch (e) { report('view ' + P.view, e); }
+    } else {
+      for (const [pass, fn] of PASSES) {
+        const t0 = timing ? performance.now() : 0;
+        for (const m of list) {
+          if (!m[fn]) continue;
+          ctx.save();
+          try { m[fn](ctx); } catch (e) { report(`${m.name}.${fn}`, e); }
+          ctx.restore();
+        }
+        if (pass === 'overlay' && C.grain > 0) {
+          ctx.globalAlpha = C.grain; ctx.drawImage(grain[Math.floor(K.t * 12) % grain.length], 0, 0); ctx.globalAlpha = 1;
+        }
+        if (pass === 'ui' && K.debug) drawDebug(ctx);
+        if (timing) perf[pass] = (perf[pass] || 0) + performance.now() - t0;
+      }
+    }
+    vctx.drawImage(K.buf, 0, 0, W * scale, H * scale);
+  }
+
+  let fps = 60;
+  function drawDebug(ctx) {
+    const p = K.player || {}, e = K.env || {};
+    const lines = [
+      `FPS ${Math.round(fps)}`,
+      `ESTAMINA ${p.stamina !== undefined ? Math.round(p.stamina * 100) + '%' : '-'}${p.boost > 0 ? ' +' + Math.ceil(p.boost) : ''}`,
+      `X ${Math.round(p.x || 0)} ${p.state || ''}`,
+      `${e.phase || ''} DIA ${e.day || ''} VIENTO ${(e.wind ?? 0).toFixed(2)}${e.timeScale > 1 ? ' ×' + e.timeScale : ''}${e.bloodMoon ? ' SANGRE' : ''}`,
+    ];
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(2, 2, 118, lines.length * 7 + 3);
+    lines.forEach((l, i) => U.text(ctx, l, 4, 4 + i * 7, '#FFFFFF'));
+  }
+
+  // ---- ?keytest=1: envía eventos de teclado reales y avanza la simulación a 60 Hz; resultado en #out.
+  function keyTest() {
+    const log = [];
+    const key = (code, down) => window.dispatchEvent(new KeyboardEvent(down ? 'keydown' : 'keyup', { code }));
+    const run = (s) => { for (let i = 0, n = Math.round(s * 60); i < n; i++) step(1 / 60); };
+    const p = () => K.player, e = () => K.env;
+    const snap = (tag) => log.push(`${tag.padEnd(26)} x=${p().x.toFixed(1)} vx=${p().vx.toFixed(1)} ${p().state} est=${(p().stamina * 100).toFixed(0)}% boost=${(p().boost || 0).toFixed(1)} dir=${p().dir} cam=${K.camX.toFixed(1)} fase=${e().phase}`);
+    run(0.5); snap('inicio');
+    key('KeyD', true); run(2); snap('D 2 s (paso)');
+    key('ShiftLeft', true); run(3); snap('D+Shift 3 s (galope)');
+    key('ShiftLeft', false); key('KeyD', false); run(1.5); snap('suelta 1.5 s');
+    key('KeyA', true); run(1.5); snap('A 1.5 s (gira)');
+    key('KeyA', false); run(1); snap('suelta A');
+    key('KeyD', true); run(0.1); key('KeyD', false); run(0.1); key('KeyD', true); run(1.5); snap('doble toque D 1.5 s');
+    key('ShiftLeft', true); run(8); snap('galope +8 s');
+    run(6); snap('galope +14 s');
+    run(3); snap('galope +17 s (agotado)');
+    key('ShiftLeft', false); key('KeyD', false); run(0.5);
+    key('ShiftLeft', true); key('KeyD', true); run(0.3); snap('pide galope sin estamina');
+    run(1); key('ShiftLeft', false); key('KeyD', false); run(1.5); snap('suelta');
+    run(3); snap(`quieto 3 s en ${K.terrainAt(p().x)}`);
+    p().x = 1500; run(5); snap(`quieto 5 s en ${K.terrainAt(p().x)} (x=1500)`);
+    key('ShiftLeft', true); key('KeyD', true); run(3); snap('galope con boost 3 s');
+    key('ShiftLeft', false); key('KeyD', false); run(1.5);
+    const c0 = e().cycleT; key('KeyG', true); key('KeyG', false); run(2.4);
+    log.push(`G: 2.4 s reales avanzan ${(e().cycleT - c0).toFixed(1)} s de ciclo (esperado 24)`);
+    key('KeyG', true); key('KeyG', false);
+    const f0 = e().phase; key('KeyT', true); key('KeyT', false); run(0.1); log.push(`T: ${f0} -> ${e().phase}`);
+    key('KeyY', true); key('KeyY', false); run(0.1); log.push(`Y: sangre=${e().bloodMoon}`);
+    const d0 = K.debug; key('KeyF', true); key('KeyF', false); log.push(`F: debug ${d0} -> ${K.debug}`);
+    outEl.style.display = 'block';
+    outEl.textContent = log.join('\n');
+    document.title = 'READY';
+  }
+
+  // ---- Arranque
+  function init() {
+    list = mods();
+    for (const m of list) if (m.init) { try { m.init(); } catch (e) { report(m.name + '.init', e); } }
+    resize();
+  }
+
+  // main.js es el último script del body: todos los módulos ya están registrados.
+  (function start() {
+    init();
+    if (P.bench) {
+      // ?bench=1: simula y dibuja N frames seguidos y muestra el tiempo por pasada.
+      const N = P.bench > 1 ? P.bench : 300;
+      for (let i = 0; i < 30; i++) step(1 / 60);
+      timing = true;
+      const t0 = performance.now();
+      for (let i = 0; i < N; i++) { step(1 / 60); render(); }
+      const total = (performance.now() - t0) / N;
+      timing = false;
+      const rows = Object.entries(perf).map(([k, v]) => `${k.padEnd(9)} ${(v / N).toFixed(3)} ms`);
+      outEl.style.display = 'block';
+      outEl.textContent = `BENCH ${N} frames: ${total.toFixed(3)} ms/frame (update+render)\n` + rows.join('\n');
+      document.title = 'READY';
+      return;
+    }
+    if (P.keytest) { keyTest(); return; }
+    if (P.shot) {
+      // ?shot=1: simula `sim` segundos a 60 Hz y dibuja un único frame para la captura.
+      const steps = Math.max(1, Math.round((P.sim ?? 1.5) * 60));
+      for (let i = 0; i < steps; i++) step(1 / 60);
+      render();
+      document.title = 'READY';
+      // ?dump=1: exporta el buffer 480×270 como PNG en #out (lo lee tools/shot.py).
+      if (P.dump) { outEl.textContent = K.buf.toDataURL('image/png'); }
+      return;
+    }
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+      last = now;
+      if (dt > 0) fps = U.lerp(fps, 1 / dt, 0.05);
+      step(dt);
+      render();
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  })();
+})(window.K);
+
+</script>
+</body>
+</html>
