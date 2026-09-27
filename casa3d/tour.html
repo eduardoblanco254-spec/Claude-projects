@@ -1,0 +1,181 @@
+<title>Casa 3D navegable</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400&display=swap">
+<style>
+:root{
+  color-scheme: dark;
+  --bg:#0f120e; --panel:rgba(18,22,17,.82); --line:rgba(226,212,170,.2);
+  --ink:#f0ebdc; --muted:#b9b29a; --accent:#e0b457; --accent-ink:#1d1a10; --wall:#e9e3d0; --room:rgba(233,227,208,.07);
+}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"IBM Plex Sans",system-ui,sans-serif;overflow:hidden}
+#c{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:grab}
+#c.dragging{cursor:grabbing}
+#fade{position:fixed;inset:0;background:#000;opacity:0;pointer-events:none;transition:opacity .35s ease}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;backdrop-filter:blur(8px)}
+#hud{position:fixed;left:16px;top:calc(16px + env(safe-area-inset-top,0px));padding:12px 14px;max-width:min(330px,calc(100% - 32px))}
+#hud .eyebrow{font:400 11px "IBM Plex Mono",monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+#hud h1{font-size:22px;font-weight:600;margin:2px 0 4px;text-wrap:balance}
+#hud p{margin:0;color:var(--muted);font-size:12.5px;line-height:1.45}
+#map{position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));width:min(300px,calc(100% - 32px));padding:10px}
+#map svg{display:block;width:100%;height:auto}
+#map .title{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin:0 2px 6px;font-family:"IBM Plex Mono",monospace;letter-spacing:.05em;text-transform:uppercase}
+.room{fill:var(--room);stroke:var(--wall);stroke-width:.14}
+.yard{fill:none;stroke:var(--muted);stroke-width:.08;stroke-dasharray:.3 .25}
+.lbl{font:500 .55px "IBM Plex Sans",sans-serif;fill:var(--muted);pointer-events:none}
+.dot{fill:var(--ink);stroke:var(--bg);stroke-width:.12;cursor:pointer}
+.dot:hover{fill:var(--accent)}
+.dot.on{fill:var(--accent)}
+#cone{fill:var(--accent);fill-opacity:.35;pointer-events:none}
+#views{position:fixed;left:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));display:flex;gap:6px;flex-wrap:wrap;max-width:calc(100% - 350px)}
+button{font:500 12.5px "IBM Plex Sans",system-ui,sans-serif;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:7px 12px;cursor:pointer;backdrop-filter:blur(8px)}
+button:hover{background:rgba(255,255,255,.12)}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.hot{position:fixed;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:6px;pointer-events:auto;cursor:pointer;border:0;background:none;padding:0}
+.hot .ring{width:46px;height:46px;border-radius:50%;border:3px solid rgba(255,255,255,.92);background:rgba(20,20,16,.35);box-shadow:0 2px 12px rgba(0,0,0,.45);display:grid;place-items:center;transition:transform .15s}
+.hot .ring::after{content:"";width:12px;height:12px;border-top:3px solid #fff;border-right:3px solid #fff;transform:translateY(3px) rotate(-45deg)}
+.hot:hover .ring{transform:scale(1.12);border-color:var(--accent)}
+.hot span{font-size:12.5px;font-weight:500;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:3px 9px;white-space:nowrap}
+#lightbox{position:fixed;inset:0;background:rgba(8,10,8,.92);display:grid;place-items:center;padding:16px;z-index:5}
+#lightbox[hidden]{display:none}
+#lightbox figure{margin:0;max-width:min(1400px,100%);display:grid;gap:10px}
+#lightbox img{width:100%;height:auto;border-radius:8px;border:1px solid var(--line)}
+#lightbox figcaption{display:flex;justify-content:space-between;align-items:center;gap:12px;color:var(--muted);font-size:13px}
+#load{position:fixed;inset:0;display:grid;place-items:center;color:var(--muted);font-size:14px;pointer-events:none}
+#load[hidden]{display:none}
+@media (max-width:720px){#map{width:170px;padding:6px}#map .title{display:none}#views{max-width:calc(100% - 210px)}#hud p{display:none}}
+@media (prefers-reduced-motion:reduce){#fade{transition:none}}
+</style>
+
+<canvas id="c" aria-label="Vista panorámica 360°"></canvas>
+<div id="fade"></div>
+<div id="load">Cargando panorámica…</div>
+<div id="hot"></div>
+<div id="hud" class="panel">
+  <div class="eyebrow">Recorrido 360° · render Cycles</div>
+  <h1 id="rname">Comedor</h1>
+  <p>Arrastra para mirar alrededor, usa la rueda para acercar y toca las flechas del piso o el plano para cambiar de espacio.</p>
+</div>
+<div id="views"></div>
+<div id="map" class="panel">
+  <div class="title"><span>Planta</span><span>11,40 × 8,50 m</span></div>
+  <svg id="plan" viewBox="-7.6 -1 28 23" role="img" aria-label="Plano con los puntos del recorrido"></svg>
+</div>
+<div id="lightbox" hidden><figure><img id="lbimg" alt=""><figcaption><span id="lbcap"></span><button id="lbclose">Cerrar</button></figcaption></figure></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+/* Plan coordinates in metres: x = axis A→D, z = row 5→1 (north→south). */
+const PANOS={
+  comedor:{n:'Comedor',p:[10.4,3.2],yaw:-100,links:[['cocina',[6.3,2.9]],['bano',[8.0,1.95]],['dorm3',[7.72,5.3]],['dorm2',[6.62,5.3]],['patio',[11.45,4.72]]]},
+  cocina:{n:'Cocina',p:[5.6,3.3],yaw:0,links:[['comedor',[9.3,3.3]],['sala',[4.05,3.05]],['bano',[8.0,1.95]],['dorm2',[6.62,5.3]]]},
+  sala:{n:'Sala',p:[2.0,2.0],yaw:0,links:[['cocina',[4.05,3.05]],['principal',[2.97,3.7]],['garaje',[-.05,3.05]]]},
+  principal:{n:'Dormitorio principal',p:[1.9,5.2],yaw:180,links:[['sala',[2.97,3.62]]]},
+  dorm2:{n:'Dormitorio 2',p:[5.6,6.2],yaw:180,links:[['cocina',[6.62,5.2]]]},
+  dorm3:{n:'Dormitorio 3',p:[9.0,6.4],yaw:90,links:[['comedor',[7.72,5.2]]]},
+  bano:{n:'Baño',p:[8.4,1.25],yaw:90,links:[['comedor',[8.0,2.0]]]},
+  garaje:{n:'Garaje',p:[-3.35,5.95],yaw:0,links:[['sala',[.05,3.05]]]},
+  patio:{n:'Patio',p:[15.2,8.5],yaw:-60,links:[['comedor',[11.35,4.72]]]}
+};
+const VIEWS=[['aerea','Vista aérea sin techo'],['comedor','Comedor'],['patio','Patio y fachada de atrás'],['garaje','Garaje']];
+
+const canvas=document.getElementById('c');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.outputEncoding=THREE.sRGBEncoding;
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(75,1,.1,200);
+camera.rotation.order='YXZ';
+const geo=new THREE.SphereGeometry(50,96,64);geo.scale(-1,1,1);
+const sphereMat=new THREE.MeshBasicMaterial({color:0xffffff});
+const sphere=new THREE.Mesh(geo,sphereMat);sphere.rotation.y=-Math.PI/2;scene.add(sphere);
+const loader=new THREE.TextureLoader();
+const cache={};
+function tex(key){if(!cache[key]){cache[key]=new Promise((res,rej)=>loader.load('panos/'+key+'.jpg',t=>{t.encoding=THREE.sRGBEncoding;t.anisotropy=renderer.capabilities.getMaxAnisotropy();res(t);},undefined,rej));}return cache[key];}
+
+let cur=null,lon=0,lat=-4,fov=75;
+const fade=document.getElementById('fade'),load=document.getElementById('load'),rname=document.getElementById('rname');
+async function go(key,keepDir){
+  const P=PANOS[key];if(!P)return;
+  if(cur)fade.style.opacity=1;
+  load.hidden=false;
+  try{
+    const t=await tex(key);
+    await new Promise(r=>setTimeout(r,cur?200:0));
+    sphereMat.map=t;sphereMat.needsUpdate=true;
+  }catch(e){load.textContent='No se pudo cargar la panorámica.';return;}
+  if(!keepDir){lon=P.yaw;lat=-4;}
+  cur=key;rname.textContent=P.n;buildHot();drawMap();
+  load.hidden=true;fade.style.opacity=0;
+  try{history.replaceState(null,'','#'+key);}catch(e){}
+  P.links.forEach(([k])=>tex(k).catch(()=>{}));
+}
+
+/* hotspots: floor markers pointing at each doorway */
+const hotLayer=document.getElementById('hot');let hots=[];
+function buildHot(){
+  hotLayer.innerHTML='';hots=[];
+  const P=PANOS[cur];
+  P.links.forEach(([k,pt])=>{
+    const dx=pt[0]-P.p[0],dz=pt[1]-P.p[1],dist=Math.hypot(dx,dz);
+    const v=new THREE.Vector3(dx,-1.5,dz).normalize().multiplyScalar(20);
+    const b=document.createElement('button');b.className='hot';b.type='button';
+    b.innerHTML='<div class="ring"></div><span>'+PANOS[k].n+'</span>';
+    b.addEventListener('click',e=>{e.stopPropagation();const yawTo=Math.atan2(dx,-dz)*180/Math.PI;lon=yawTo;go(k,true);});
+    hotLayer.appendChild(b);hots.push({el:b,v});
+  });
+}
+function placeHot(){
+  const w=innerWidth,h=innerHeight;
+  for(const hs of hots){
+    const p=hs.v.clone().project(camera);
+    const vis=p.z<1&&Math.abs(p.x)<1.1&&Math.abs(p.y)<1.1;
+    hs.el.style.display=vis?'flex':'none';
+    if(vis){hs.el.style.left=((p.x+1)/2*w)+'px';hs.el.style.top=((1-p.y)/2*h)+'px';}
+  }
+}
+
+/* mini plan */
+const svg=document.getElementById('plan');const NS='http://www.w3.org/2000/svg';
+function el(tag,attrs,parent){const e=document.createElementNS(NS,tag);for(const k in attrs)e.setAttribute(k,attrs[k]);(parent||svg).appendChild(e);return e;}
+el('path',{d:'M-7 0 H19.8 V14.3 L-7 21 Z',class:'yard'});
+[[0,0,4.05,3.65,'Sala'],[4.05,0,3.05,1.94,'Cocina'],[7.1,0,3.3,1.94,'Baño'],[10.4,0,1,1.94,''],[4.05,1.94,7.35,3.31,'Comedor'],[0,3.65,4.05,4.85,'Principal'],[4.05,5.25,3.05,3.25,'Dorm. 2'],[7.1,5.25,4.3,3.25,'Dorm. 3'],[-7,0,7,6.5,'Garaje']]
+.forEach(([x,z,w,d,n])=>{el('rect',{x,y:z,width:w,height:d,class:'room'});if(n){const t=el('text',{x:x+w/2,y:z+d/2+.2,'text-anchor':'middle',class:'lbl'});t.textContent=n;}});
+{const t=el('text',{x:15.5,y:11,'text-anchor':'middle',class:'lbl'});t.textContent='Patio';}
+el('circle',{cx:7.1,cy:3.65,r:.27,fill:'var(--wall)'});
+const cone=el('path',{id:'cone',d:''});
+const dots={};
+for(const k in PANOS){const [x,z]=PANOS[k].p;const d=el('circle',{cx:x,cy:z,r:.55,class:'dot',tabindex:0,role:'button','aria-label':PANOS[k].n});
+  d.addEventListener('click',()=>go(k));d.addEventListener('keydown',e=>{if(e.key==='Enter')go(k);});dots[k]=d;}
+function drawMap(){for(const k in dots)dots[k].classList.toggle('on',k===cur);}
+function drawCone(){if(!cur)return;const [x,z]=PANOS[cur].p,a=lon*Math.PI/180,h=fov*Math.PI/360*camera.aspect,R=3.2;
+  const p1=[x+R*Math.sin(a-h),z-R*Math.cos(a-h)],p2=[x+R*Math.sin(a+h),z-R*Math.cos(a+h)];
+  cone.setAttribute('d',`M${x} ${z} L${p1[0]} ${p1[1]} A${R} ${R} 0 0 1 ${p2[0]} ${p2[1]} Z`);}
+
+/* still renders */
+const vbox=document.getElementById('views'),lb=document.getElementById('lightbox'),lbimg=document.getElementById('lbimg'),lbcap=document.getElementById('lbcap');
+VIEWS.forEach(([k,n])=>{const b=document.createElement('button');b.textContent=n;b.onclick=()=>{lbimg.src='vistas/'+k+'.jpg';lbimg.alt=n;lbcap.textContent=n;lb.hidden=false;};vbox.appendChild(b);});
+const closeLb=()=>{lb.hidden=true;};document.getElementById('lbclose').onclick=closeLb;lb.addEventListener('click',e=>{if(e.target===lb)closeLb();});
+addEventListener('keydown',e=>{if(e.key==='Escape')closeLb();});
+
+/* look controls */
+let drag=null;
+canvas.addEventListener('pointerdown',e=>{drag={x:e.clientX,y:e.clientY,id:e.pointerId};canvas.setPointerCapture(e.pointerId);canvas.classList.add('dragging');});
+canvas.addEventListener('pointermove',e=>{if(!drag||e.pointerId!==drag.id)return;const k=fov/innerHeight;lon-=(e.clientX-drag.x)*k;lat=Math.max(-85,Math.min(85,lat+(e.clientY-drag.y)*k));drag.x=e.clientX;drag.y=e.clientY;});
+const end=()=>{drag=null;canvas.classList.remove('dragging');};canvas.addEventListener('pointerup',end);canvas.addEventListener('pointercancel',end);
+canvas.addEventListener('wheel',e=>{e.preventDefault();fov=Math.max(35,Math.min(95,fov+e.deltaY*.04));},{passive:false});
+const keys={};addEventListener('keydown',e=>{keys[e.key]=true;});addEventListener('keyup',e=>{keys[e.key]=false;});
+
+function resize(){renderer.setSize(innerWidth,innerHeight,false);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();}
+addEventListener('resize',resize);resize();
+function tick(){
+  if(keys.ArrowLeft)lon-=1.2;if(keys.ArrowRight)lon+=1.2;if(keys.ArrowUp)lat=Math.min(85,lat+1);if(keys.ArrowDown)lat=Math.max(-85,lat-1);
+  camera.fov=fov;camera.updateProjectionMatrix();
+  camera.rotation.set(lat*Math.PI/180,-lon*Math.PI/180,0);
+  renderer.render(scene,camera);placeHot();drawCone();requestAnimationFrame(tick);
+}
+const start=(location.hash||'').slice(1);
+go(PANOS[start]?start:'comedor');tick();
+})();
+</script>
