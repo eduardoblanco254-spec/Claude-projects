@@ -38,14 +38,14 @@ cual a otro juego. `demo.html` la usa en un prototipo con ritmo al estilo Patapo
 
 - Deja al menos 60–80 filas de agua y pon a la tropa a pocos píxeles del borde: el reflejo de los
   personajes marchando es lo que más luce.
-- Personajes simples (siluetas negras con un ojo blanco) se leen perfecto en el reflejo roto.
+- Personajes simples (siluetas negras) se leen perfecto en el reflejo roto.
 - Puedes sincronizar el agua con el ritmo: sube `viento` un instante en cada golpe de tambor bien dado,
   o haz `hz` igual al tempo (p. ej. 8 Hz a 120 ppm) para que las olas "bailen" con la música.
 - Rendimiento: unos 2–3 ms por frame en 480×270; no escala con el número de personajes.
 
 ## Guerreros stickman (demo.html)
 
-- Esqueleto: cadera, torso (9 px, 2 px de grosor), cabeza r3 con un ojo, muslo/pierna 6+6, brazo/antebrazo 5+5.
+- Esqueleto: cadera, torso (9 px, 2 px de grosor), cabeza r3 (sin ojos), muslo/pierna 6+6, brazo/antebrazo 5+5.
 - Rodillas y codos por **cinemática inversa de 2 huesos** (ley de cosenos): solo se animan cadera, pies y
   manos; las articulaciones se calculan solas. Todo se dibuja con líneas de Bresenham de 1 px.
 - **Marcha sin patinar**: un ciclo de piernas = un pulso de tambor (0.5 s). El pie apoyado retrocede

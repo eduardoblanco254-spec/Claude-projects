@@ -194,10 +194,7 @@
     linea(hx, hy, shx, shy, NEGRO);
     linea(hx + 1, hy - 1, shx + 1, shy + 1, NEGRO);                  // torso de 2 px para dar peso
     const cx = Math.round(shx + incl * 0.3), cy = Math.round(shy - 4);
-    disco(ctx, cx, cy, 3, NEGRO);
-    rect(cx, cy - 1, 2, 2, '#F4F1E6');                               // ojo
-    rect(cx + 1, cy - (wa > 0.5 ? 1 : 0), 1, 1, NEGRO);              // pupila (entornada al atacar)
-    if (wa > 0.5) rect(cx - 1, cy - 2, 4, 1, NEGRO);                 // ceja de enfado
+    [3, 5, 5, 5, 3].forEach((w, i) => rect(cx - (w >> 1), cy - 2 + i, w, 1, NEGRO)); // cabeza redonda 5×5
 
     // Brazo de atrás: se balancea opuesto a la pierna delantera
     const bal = Math.sin(2 * Math.PI * p);
