@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tambores junto al río</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0d0f14; overflow: hidden; }
+  canvas { position: absolute; image-rendering: pixelated; image-rendering: crisp-edges; }
+  #ayuda { position: absolute; left: 8px; bottom: 6px; color: #cfd3c4; font: 12px monospace; opacity: .75; }
+</style>
+</head>
+<body>
+<canvas id="pantalla"></canvas>
+<div id="ayuda">A = PATA · D = PON · al ritmo · PATA PATA PATA PON = marchar · PON PON PATA PON = atacar · N = noche · V = viento</div>
+<script src="agua.js"></script>
+<script>
+(() => {
+  const W = 480, H = 270, WY = 190, GY = 176;       // buffer, línea del agua, suelo donde pisan
+  const P = new URLSearchParams(location.search);
+  const pantalla = document.getElementById('pantalla'), pctx = pantalla.getContext('2d');
+  const buf = document.createElement('canvas'); buf.width = W; buf.height = H;
+  const ctx = buf.getContext('2d', { willReadFrequently: true });
+  const agua = crearAgua({ ancho: W, alto: H, yAgua: WY });
+
+  // ---- Utilidades de pixel
+  const rect = (x, y, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(Math.round(x), Math.round(y), w, h); };
+  function disco(g, cx, cy, r, c) {
+    g.fillStyle = c; cx = Math.round(cx); cy = Math.round(cy);
+    for (let dy = -r; dy <= r; dy++) { const hw = Math.floor(Math.sqrt(r * r - dy * dy) + 0.5); g.fillRect(cx - hw, cy + dy, hw * 2 + 1, 1); }
+  }
+  const hash = (x, s = 0) => { let h = (x * 374761393 + s * 668265263) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); h = Math.imul(h ^ (h >>> 16), 2246822519); return ((h ^ (h >>> 13)) >>> 0) / 4294967296; };
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const mix = (c1, c2, t) => { const a = parseInt(c1.slice(1), 16), b = parseInt(c2.slice(1), 16);
+    const ch = (s) => Math.round(lerp((a >> s) & 255, (b >> s) & 255, t));
+    return `rgb(${ch(16)},${ch(8)},${ch(0)})`; };
+
+  // ---- Estado
+  let t = 0, camX = 0, noche = P.has('noche') ? 1 : 0, nocheObj = noche, viento = 0.5;
+  const BEAT = 0.5;                          // un golpe de tambor cada medio segundo
+  let combo = [], orden = null, ordenFin = 0, textos = [];
+  const tropa = [0, 1, 2, 3, 4, 5].map((i) => ({ i, x: 150 - i * 22, fase: hash(i, 3) * 6, porta: i === 0 ? 'bandera' : i === 3 ? 'antorcha' : 'lanza' }));
+
+  // ---- Sonido (tambores sintetizados)
+  let ac = null;
+  function tambor(frec, dur = 0.12, vol = 0.35) {
+    try {
+      ac = ac || new AudioContext();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = 'triangle'; o.frequency.setValueAtTime(frec, ac.currentTime);
+      o.frequency.exponentialRampToValueAtTime(frec * 0.5, ac.currentTime + dur);
+      g.gain.setValueAtTime(vol, ac.currentTime); g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + dur);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + dur);
+    } catch (_) {}
+  }
+
+  // ---- Ritmo: cada golpe debe caer cerca de un pulso
+  function golpe(tipo) {
+    tambor(tipo === 'PATA' ? 180 : 120);
+    const fase = (t % BEAT) / BEAT, cerca = fase < 0.25 || fase > 0.75;
+    textos.push({ s: tipo === 'PATA' ? '¡PATA!' : '¡PON!', x: tipo === 'PATA' ? 170 : 290, y: 40, a: 0, ok: cerca });
+    if (!cerca || orden) { combo = []; return; }
+    combo.push(tipo); if (combo.length > 4) combo.shift();
+    const k = combo.join(' ');
+    if (k === 'PATA PATA PATA PON') { orden = 'marchar'; ordenFin = t + BEAT * 4; combo = []; }
+    if (k === 'PON PON PATA PON')   { orden = 'atacar';  ordenFin = t + BEAT * 4; combo = []; }
+  }
+  addEventListener('keydown', (e) => {
+    if (e.repeat) return;
+    if (e.code === 'KeyA' || e.code === 'KeyJ') golpe('PATA');
+    if (e.code === 'KeyD' || e.code === 'KeyK') golpe('PON');
+    if (e.code === 'KeyN') nocheObj = nocheObj ? 0 : 1;
+    if (e.code === 'KeyV') viento = viento > 0.9 ? 0.1 : viento + 0.3;
+  });
+
+  // ---- Fondo
+  const sx = (x, f) => Math.round(x - camX * f);
+  function cielo() {
+    const top = mix('#6FA3C9', '#0E1630', noche), hor = mix('#E8D7A8', '#27304A', noche);
+    for (let y = 0; y < WY; y++) { const k = Math.pow(y / WY, 1.4); ctx.fillStyle = mixRGB(top, hor, k); ctx.fillRect(0, y, W, 1); }
+    if (noche > 0.3) for (let i = 0; i < 60; i++) { ctx.globalAlpha = (noche - 0.3) * (0.5 + 0.5 * Math.sin(t * 2 + i)); rect(Math.floor(hash(i, 1) * W), Math.floor(hash(i, 2) * 110), 1, 1, '#E8EEFF'); }
+    ctx.globalAlpha = 1;
+    disco(ctx, 380, 50, 9, noche > 0.5 ? '#E9ECF2' : '#FFF1C2');
+  }
+  function mixRGB(a, b, k) { // a y b son 'rgb(r,g,b)'
+    const pa = a.match(/\d+/g).map(Number), pb = b.match(/\d+/g).map(Number);
+    return `rgb(${pa.map((v, i) => Math.round(lerp(v, pb[i], k))).join(',')})`;
+  }
+  function sierra(f, y0, alto, paso, col, seed) {
+    ctx.fillStyle = col;
+    const off = ((camX * f) % paso + paso) % paso, base = Math.floor(camX * f / paso);
+    for (let x = -paso; x < W + paso; x++) {
+      const wx = x + off, i = Math.floor(wx / paso), u = (wx % paso) / paso;
+      const h0 = hash(i + base, seed), h1 = hash(i + base + 1, seed);
+      const h = Math.round(lerp(h0, h1, u * u * (3 - 2 * u)) * alto);
+      ctx.fillRect(x, y0 - h, 1, WY - (y0 - h));
+    }
+  }
+  function arboles(f, y0, col, seed, sep) {
+    for (let k = -1; k < W / sep + 2; k++) {
+      const i = k + Math.floor(camX * f / sep), x = i * sep - camX * f + hash(i, seed) * sep * 0.6;
+      const h = 26 + Math.floor(hash(i, seed + 1) * 22);
+      rect(x, y0 - h, 3, h, col);
+      disco(ctx, x + 1, y0 - h, 8 + Math.floor(hash(i, seed + 2) * 5), col);
+    }
+  }
+  function suelo() {
+    const hierba = mix('#6E8A3C', '#26301F', noche), tierra = mix('#5A3E26', '#1E1712', noche), tierra2 = mix('#46301D', '#171210', noche);
+    rect(0, GY, W, WY - GY, tierra);
+    for (let x = 0; x < W; x += 8) { const i = Math.floor((x + camX) / 8); rect(x - ((camX % 8 + 8) % 8), GY + 5 + Math.floor(hash(i, 7) * 7), 4, 2, tierra2); }
+    rect(0, GY, W, 2, hierba);
+    for (let x = 0; x < W; x++) { const i = Math.floor(x + camX); if (hash(i, 9) < 0.35) rect(x, GY - 1 - Math.floor(hash(i, 10) * 3 * (0.6 + 0.4 * Math.sin(t * 3 * viento + i * 0.3))), 1, 3, hierba); }
+  }
+
+  // ---- Guerreros: bolita negra, ojo grande, patas de palo
+  const NEGRO = '#15131A';
+  function guerrero(g, px) {
+    const marcha = orden === 'marchar', ataque = orden === 'atacar';
+    const pulso = Math.max(0, 1 - ((t % BEAT) / BEAT) * 4);           // salto corto en cada pulso
+    const y = GY - 12 - Math.round(pulso * 2) - (marcha ? Math.round(Math.abs(Math.sin(t * 8 + g.fase)) * 2) : 0);
+    const paso = marcha ? Math.sin(t * 12 + g.fase) : 0;
+    // patas
+    rect(px - 3 + Math.round(paso * 2), y + 6, 1, GY - y - 6, NEGRO);
+    rect(px + 2 - Math.round(paso * 2), y + 6, 1, GY - y - 6, NEGRO);
+    rect(px - 4 + Math.round(paso * 2), GY - 1, 2, 1, NEGRO); rect(px + 2 - Math.round(paso * 2), GY - 1, 2, 1, NEGRO);
+    // cuerpo y ojo (el ojo mira al frente; se entorna al atacar)
+    disco(ctx, px, y, 7, NEGRO);
+    disco(ctx, px + 1, y - 1, 4, '#F4F1E6');
+    if (ataque) rect(px - 3, y - 3, 8, 2, NEGRO);
+    rect(px + 2, y - 2, 2, 2, NEGRO);
+    // brazo y objeto
+    const emp = ataque ? Math.round(Math.max(0, Math.sin((t % BEAT) / BEAT * Math.PI)) * 6) : 0;
+    rect(px + 5, y + 2, 3, 1, NEGRO);
+    if (g.porta === 'lanza') { rect(px + 7 + emp - 10, y - 1 + (ataque ? 3 : 0), ataque ? 16 : 1, 1, NEGRO); if (!ataque) rect(px + 7, y - 10, 1, 16, NEGRO); else rect(px + 7 + emp + 6, y + 1, 2, 3, '#C9CCD2'); if (!ataque) rect(px + 6, y - 12, 3, 2, '#C9CCD2'); }
+    if (g.porta === 'bandera') { rect(px + 7, y - 22, 1, 28, NEGRO); rect(px + 8, y - 22, 9, 6, '#B8322A'); rect(px + 8, y - 16, 5, 1, '#B8322A'); disco(ctx, px + 12, y - 19, 1, '#F2C14E'); }
+    if (g.porta === 'antorcha') { rect(px + 7, y - 10, 1, 14, NEGRO); const fl = Math.floor(t * 10) % 2; rect(px + 6, y - 14 - fl, 3, 4 + fl, '#F2A33A'); rect(px + 7, y - 13, 1, 2, '#FFE39A'); }
+  }
+
+  // ---- Oscuridad con halos elípticos (misma técnica que la escena del reino)
+  const capa = document.createElement('canvas'); capa.width = W; capa.height = H; const cx2 = capa.getContext('2d');
+  function halo(w, h) {
+    const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d'); x.fillStyle = '#FFB070';
+    for (let k = 0; k < 5; k++) { const f = 1 - k / 5, ax = w / 2 * f - 1, ay = h / 2 * f - 1; x.globalAlpha = k ? 0.24 : 0.12;
+      for (let yy = -Math.floor(ay); yy <= Math.floor(ay); yy++) { const hw = Math.floor(ax * Math.sqrt(1 - yy * yy / (ay * ay))); x.fillRect(Math.round(w / 2 - hw), Math.round(h / 2 + yy), hw * 2, 1); } }
+    return c;
+  }
+  const HALO = halo(160, 90);
+  function oscuridad(luces) {
+    if (noche < 0.01) return;
+    cx2.globalCompositeOperation = 'source-over'; cx2.globalAlpha = 1;
+    cx2.fillStyle = mix('#FFFFFF', '#5A6894', noche); cx2.fillRect(0, 0, W, H);
+    cx2.globalCompositeOperation = 'screen';
+    for (const L of luces) { cx2.globalAlpha = noche * (0.85 + 0.15 * Math.sin(t * 17 + L.x)); cx2.drawImage(HALO, Math.round(L.x - 80), Math.round(L.y - 45)); disco(cx2, L.x, L.y, 5, '#FFD8A8'); }
+    // luna y estrellas no se oscurecen: se "perforan" en blanco (multiplicar por blanco no cambia nada)
+    cx2.globalCompositeOperation = 'source-over'; cx2.globalAlpha = noche;
+    disco(cx2, 380, 50, 9, '#FFFFFF'); cx2.fillStyle = '#FFFFFF';
+    for (let i = 0; i < 60; i++) cx2.fillRect(Math.floor(hash(i, 1) * W), Math.floor(hash(i, 2) * 110), 1, 1);
+    ctx.globalCompositeOperation = 'multiply'; ctx.drawImage(capa, 0, 0); ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---- Bucle
+  function paso(dt) {
+    t += dt;
+    noche += (nocheObj - noche) * Math.min(1, dt * 1.5);
+    if (orden && t >= ordenFin) orden = null;
+    if (orden === 'marchar') camX += 30 * dt;
+    for (const s of textos) s.a += dt;
+    textos = textos.filter((s) => s.a < 0.6);
+    // metrónomo suave
+    const b = Math.floor(t / BEAT); if (b !== paso.b) { paso.b = b; if (!P.has('shot')) tambor(orden ? 90 : 60, 0.05, orden ? 0.12 : 0.05); }
+  }
+  function dibujar() {
+    cielo();
+    sierra(0.1, 130, 40, 60, mix('#8FA7B8', '#1E2740', noche), 1);
+    arboles(0.3, 168, mix('#5D7A6A', '#18212A', noche), 20, 26);
+    sierra(0.5, 172, 10, 30, mix('#4E6B45', '#141C18', noche), 2);
+    suelo();
+    // piedras y postes del camino (plano de juego)
+    for (let k = -1; k < W / 90 + 2; k++) { const i = k + Math.floor(camX / 90), x = sx(i * 90 + hash(i, 4) * 50, 1);
+      if (hash(i, 5) < 0.5) { disco(ctx, x, GY - 2, 4, mix('#7B7D78', '#2A2C33', noche)); } else { rect(x, GY - 16, 2, 16, mix('#5B4430', '#1B1510', noche)); } }
+    const luces = [];
+    for (const g of tropa) { guerrero(g, g.x); if (g.porta === 'antorcha') luces.push({ x: g.x + 7, y: GY - 26, tam: 'chica', fuerza: 1 }); }
+    // tambores que se ven arriba
+    for (const s of textos) { ctx.globalAlpha = 1 - s.a / 0.6; texto(s.s, s.x, s.y - Math.round(s.a * 12), s.ok ? '#FFF1C2' : '#8C8C8C'); }
+    ctx.globalAlpha = 1;
+    // pulso en el borde
+    const pulso = Math.max(0, 1 - ((t % BEAT) / BEAT) * 3);
+    ctx.globalAlpha = 0.5 * pulso; rect(0, 0, W, 2, '#FFFFFF'); rect(0, H - 2, W, 2, '#FFFFFF'); ctx.globalAlpha = 1;
+    oscuridad(luces);
+    agua.dibujar(ctx, { t, camX, viento, oscuridad: noche, colorNoche: '#141A2E', luces });
+  }
+  // Fuente mínima 3×5 para los gritos
+  const G = { 'P': [7,5,7,4,4], 'A': [2,5,7,5,5], 'T': [7,2,2,2,2], 'O': [7,5,5,5,7], 'N': [5,7,7,7,5], '!': [2,2,2,0,2], '¡': [2,0,2,2,2], ' ': [0,0,0,0,0] };
+  function texto(s, x, y, c) {
+    ctx.fillStyle = c; let px = x - s.length * 4;
+    for (const ch of s) { const g = G[ch] || G[' ']; for (let r = 0; r < 5; r++) for (let b = 0; b < 3; b++) if (g[r] & (4 >> b)) ctx.fillRect(px + b * 2, y + r * 2, 2, 2); px += 8; }
+  }
+
+  function ajustar() {
+    const k = Math.max(1, Math.floor(Math.min(innerWidth / W, innerHeight / H)));
+    pantalla.width = W * k; pantalla.height = H * k;
+    pantalla.style.left = ((innerWidth - W * k) >> 1) + 'px'; pantalla.style.top = ((innerHeight - H * k) >> 1) + 'px';
+    pctx.imageSmoothingEnabled = false;
+  }
+  addEventListener('resize', ajustar); ajustar();
+
+  // ?shot=1 simula unos segundos y deja la imagen en #out (para capturas automáticas)
+  if (P.has('shot')) {
+    if (P.get('orden')) { orden = P.get('orden'); ordenFin = 99; }
+    for (let i = 0; i < 90; i++) paso(1 / 60);
+    dibujar();
+    const pre = document.createElement('pre'); pre.id = 'out'; pre.textContent = buf.toDataURL(); document.body.appendChild(pre);
+    return;
+  }
+  let last = performance.now();
+  requestAnimationFrame(function frame(now) {
+    paso(Math.min(0.05, (now - last) / 1000)); last = now;
+    dibujar();
+    pctx.drawImage(buf, 0, 0, pantalla.width, pantalla.height);
+    requestAnimationFrame(frame);
+  });
+})();
+</script>
+</body>
+</html>
