@@ -126,8 +126,8 @@
     });
   }
   // Dibuja un lienzo de TW de ancho repetido con el factor f, recortado a la pantalla.
-  function drawTiled(ctx, c, f, y, h) {
-    const s = K.sx(0, f);
+  function drawTiled(ctx, c, f, y, h, off = 0) {
+    const s = K.sx(0, f) - Math.round(off);
     for (let x = U.mod(s, TW) - TW; x < W; x += TW) {
       const dx = Math.max(0, x), sw = Math.min(W, x + TW) - dx;
       if (sw > 0) ctx.drawImage(c, dx - x, 0, sw, h, dx, y, sw, h);
@@ -636,7 +636,7 @@
     drawOverlay(ctx) {
       if (!fogCol || fogA <= 0.003) return;
       ctx.globalAlpha = fogA;
-      drawTiled(ctx, fogCol.c, 1.5, FOG_Y, FOG_H);
+      drawTiled(ctx, fogCol.c, 1.5, FOG_Y, FOG_H, fogOff);
       ctx.globalAlpha = 1;
     },
   });

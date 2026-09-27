@@ -249,8 +249,7 @@
         for (const p of sparks) ctx.fillRect(p.x, WY + p.y, p.w, 1);
         ctx.globalAlpha = 1;
       }
-    },
-    drawOverlay(ctx) {
+      // Peces aquí (no en overlay) para que la niebla de primer plano pase por delante.
       for (const f of fishes) drawFish(ctx, f);
     },
   });

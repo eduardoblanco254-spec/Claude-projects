@@ -24,32 +24,24 @@ python build.py
 `tools/shot.py` usa Chrome sin ventana. En Linux cambia la ruta en `CHROMES` (p. ej. `chromium` o
 `google-chrome`) y usa `/` en las rutas.
 
-## Pendiente (de la revisión de arte y código)
-Alta:
-1. `11_props.js` — El muelle está sobre la arena y no sobre el agua. Prolongar pilotes y tirantes dentro
-   del agua hasta WY+14/16 (algas en la línea de flotación) y un embarcadero bajo a y≈186–192; dibujar la
-   parte y≥190 en `drawOverlay` de props pasada por `U.multiplyTint(canvas, K.env.mulColor)`.
-2. `11_props.js` — El emblema del estandarte se lee como hoz y martillo. Sustituir por una corona de
-   3 puntas centrada, o mejor un estandarte vertical colgante de ≈12×24 px con cola de golondrina.
+## Pendiente
 
-Media:
-3. `11_props.js` — Escala: muro de piedra ≈26×60 con almenas, tiendas ≈36×50 con alero por encima de la
-   corona del jinete (~43 px), estatua ≈34×72 con pedestal.
-4. `11_props.js` — Los campos parecen tablones apilados: el labrado debe ser una franja fina en la
-   superficie (y 170–174) con caballones de 1 px y brotes; la cara del talud, tierra del mundo.
-5. `40_light.js` — Los halos dibujan cúpulas de anillos en el cielo: halos como elipses achatadas
-   (≈256×140 fogata, 128×72 antorchas), recortar a y≥100 y difuminar el último anillo.
-6. `40_light.js` — Llamas y luna se apagan de noche: disco central con alfa 1 en los halos de fuego
-   (r≈14 fogata, ≈6 antorcha), colores más cálidos (#FFB070 / #FFC48A) y redibujar luna y estrellas
-   después del multiply.
+Revisado el 2026-09-27 con capturas: ya estaban resueltos en el código el muelle sobre el agua, el
+estandarte vertical con corona, la escala de muros, tiendas y estatua y los campos como franja fina.
+En esta sesión se resolvieron:
+- `40_light.js`: halos en elipses achatadas (256×140 fogata, 128×72 antorcha), recortados a y≥100, anillo
+  exterior más tenue, colores cálidos (#FFB070 / #FFC48A), núcleo opaco (r 14 / 6) y luna y estrellas
+  sin oscurecer de noche.
+- `10_world.js`: la niebla de primer plano deriva con el viento (`fogOff` ya se usa).
+- `30_water.js`: los peces se dibujan en la pasada de agua, por debajo de la niebla.
+- `90_main.js`: el fondo del panel F se ajusta al texto; `keyTest` galopa desde x=700 para no chocar con
+  el borde del mundo.
+- `tools/shot.py`: rutas de Chromium para Linux y `--no-sandbox`.
 
-Baja:
+Queda (baja):
 - `11_props.js` arroyo y cascada demasiado cian (usar paleta derivada del río #686C53) y sin salpicadura.
 - `10_world.js` juncos de fondo sin bruma (de noche parecen postes); bosque con copas a la misma altura;
-  juncos de la orilla pegados al talud; `fogOff` se calcula y no se usa (la niebla no se mueve).
+  juncos de la orilla pegados al talud.
 - `40_light.js` Y cambia a luna de sangre de golpe de noche y de día no hace nada visible.
-- `30_water.js` los peces se dibujan encima de la niebla de primer plano.
-- `90_main.js` el texto del panel F se sale de su fondo; `keyTest` choca con el nuevo límite de 30 px del
-  borde del mundo (ajustar la expectativa del tramo "galope +14 s").
 
 Tras cada corrección: capturas antes/después, `keytest=1` y `bench=300` sin `[err]`, y `python build.py`.

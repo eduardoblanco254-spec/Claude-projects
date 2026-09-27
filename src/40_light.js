@@ -77,17 +77,26 @@
   }
   let flyAmount = 0;
 
-  // ---- Halos escalonados (4–5 anillos) para la capa de oscuridad
-  function makeHalo(size, color, rings = 5) {
-    const { c, x } = U.canvas(size, size), r = size / 2;
-    x.globalAlpha = 0.24;
-    for (let k = 0; k < rings; k++) U.disc(x, r, r, Math.max(1, Math.floor(r * (1 - k / rings)) - 1), color);
+  // ---- Halos escalonados (4–5 anillos) para la capa de oscuridad: elipses achatadas (la luz se extiende
+  // por el suelo, no hace cúpulas en el cielo) con el anillo exterior más tenue.
+  function makeHalo(w, h, color, rings = 5) {
+    const { c, x } = U.canvas(w, h), rx = w / 2, ry = h / 2;
+    x.fillStyle = color;
+    for (let k = 0; k < rings; k++) {
+      const f = 1 - k / rings, ax = rx * f - 1, ay = ry * f - 1;
+      x.globalAlpha = k === 0 ? 0.12 : 0.24;
+      for (let yy = -Math.floor(ay); yy <= Math.floor(ay); yy++) {
+        const hw = Math.floor(ax * Math.sqrt(1 - (yy * yy) / (ay * ay)));
+        x.fillRect(Math.round(rx - hw), Math.round(ry + yy), hw * 2, 1);
+      }
+    }
     return c;
   }
+  const HALO_TOP = 100;   // los halos no suben al cielo
   const HALO = {
-    firefly: { c: makeHalo(64, '#C8FFD2', 4), power: 0.5 },
-    torch:   { c: makeHalo(128, '#FFE2B8'), power: 0.95 },
-    fire:    { c: makeHalo(256, '#FFD9A6'), power: 1 },
+    firefly: { c: makeHalo(64, 48, '#C8FFD2', 4), power: 0.5 },
+    torch:   { c: makeHalo(128, 72, '#FFC48A'), power: 0.95, core: 6, coreC: '#FFE0B0' },
+    fire:    { c: makeHalo(256, 140, '#FFB070'), power: 1, core: 14, coreC: '#FFD8A8' },
   };
   const dark = U.canvas(W, H);
 
@@ -216,7 +225,21 @@
         if (sx + half < 0 || sx - half > W) continue;
         const flick = (U.noise1(K.t * 7 + L.x * 0.13, 11) - 0.5) * 0.15;
         d.globalAlpha = U.clamp(h.power * (L.power ?? 1) * strength * (0.85 + flick), 0, 1);
-        d.drawImage(h.c, Math.round(sx - half), Math.round(L.y - half));
+        const hw = h.c.width, hh = h.c.height, x0 = Math.round(sx - half), y0 = Math.round(L.y - hh / 2);
+        const cut = Math.max(0, HALO_TOP - y0);
+        if (cut < hh) d.drawImage(h.c, 0, cut, hw, hh - cut, x0, y0 + cut, hw, hh - cut);
+        // Núcleo opaco: la llama y lo que toca no se apagan de noche.
+        if (h.core) { d.globalAlpha = strength; U.disc(d, Math.round(sx), Math.round(L.y), h.core, h.coreC); }
+      }
+      // Luna y estrellas no se oscurecen: se "perforan" en la capa (multiplicar por blanco no cambia nada).
+      if (env.night > 0.02) {
+        d.globalCompositeOperation = 'source-over';
+        if (env.moonVis) { d.globalAlpha = env.night; U.disc(d, env.moonX, env.moonY, 8, '#FFFFFF'); }
+        d.fillStyle = '#FFFFFF';
+        for (const s of stars) {
+          d.globalAlpha = env.night * (s.y < 90 ? 1 : 0.5);
+          d.fillRect(s.x - (s.big ? 1 : 0), s.y - (s.big ? 1 : 0), s.big ? 3 : 1, s.big ? 3 : 1);
+        }
       }
       d.globalCompositeOperation = 'source-over';
       d.globalAlpha = 1;

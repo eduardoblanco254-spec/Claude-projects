@@ -159,7 +159,7 @@
       `X ${Math.round(p.x || 0)} ${p.state || ''}`,
       `${e.phase || ''} DIA ${e.day || ''} VIENTO ${(e.wind ?? 0).toFixed(2)}${e.timeScale > 1 ? ' ×' + e.timeScale : ''}${e.bloodMoon ? ' SANGRE' : ''}`,
     ];
-    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(2, 2, 118, lines.length * 7 + 3);
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(2, 2, Math.max(...lines.map((l) => l.length)) * 4 + 4, lines.length * 7 + 3);
     lines.forEach((l, i) => U.text(ctx, l, 4, 4 + i * 7, '#FFFFFF'));
   }
 
@@ -177,7 +177,7 @@
     key('KeyA', true); run(1.5); snap('A 1.5 s (gira)');
     key('KeyA', false); run(1); snap('suelta A');
     key('KeyD', true); run(0.1); key('KeyD', false); run(0.1); key('KeyD', true); run(1.5); snap('doble toque D 1.5 s');
-    key('ShiftLeft', true); run(8); snap('galope +8 s');
+    p().x = 700; key('ShiftLeft', true); run(8); snap('galope +8 s (desde x=700)');
     run(6); snap('galope +14 s');
     run(3); snap('galope +17 s (agotado)');
     key('ShiftLeft', false); key('KeyD', false); run(0.5);

@@ -27,6 +27,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 CHROMES = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    "/opt/pw-browsers/chromium",
+    "/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/google-chrome",
 ]
 
 
@@ -40,7 +44,7 @@ def chrome_path():
 def dump(query, timeout):
     udd = tempfile.mkdtemp(prefix="kshot-")
     cmd = [
-        chrome_path(), "--headless=new", "--disable-gpu", "--no-first-run",
+        chrome_path(), "--headless=new", "--disable-gpu", "--no-first-run", "--no-sandbox",
         "--no-default-browser-check", "--allow-file-access-from-files",
         f"--user-data-dir={udd}", "--virtual-time-budget=10000",
         "--enable-logging=stderr", "--v=0", "--dump-dom",
