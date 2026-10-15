@@ -1,0 +1,15 @@
+{
+  "name": "ps5-alerta-nube",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vigilante de stock de la PS5 en Amazon que avisa por Bark (corre en la nube con Chromium headless).",
+  "type": "module",
+  "scripts": {
+    "once": "node watch.mjs --once",
+    "watch": "node watch.mjs",
+    "test-bark": "node watch.mjs --test"
+  },
+  "dependencies": {
+    "playwright-core": "1.56.1"
+  }
+}
