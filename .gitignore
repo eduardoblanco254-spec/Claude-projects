@@ -146,3 +146,6 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
 juego/musica_prueba/
+
+# Claude Code local settings (contiene la clave de Bark)
+.claude/settings.local.json
