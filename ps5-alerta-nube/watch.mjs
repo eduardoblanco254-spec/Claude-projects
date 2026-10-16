@@ -6,8 +6,8 @@
 //   BARK_KEY=xxxxxxxx node watch.mjs --test     # manda una notificacion normal de prueba
 //   node watch.mjs --once --dry                 # revisa sin mandar ningun aviso
 //
-// Variables opcionales: ASINS (lista separada por comas), INTERVALO_S (120), DURACION_S (6600),
-// CHROMIUM_PATH, HTTPS_PROXY.
+// Variables opcionales: ASINS (lista separada por comas), ZIP (33166), INTERVALO_S (120),
+// DURACION_S (6600), CHROMIUM_PATH, HTTPS_PROXY.
 import { chromium } from 'playwright-core';
 import { execFileSync } from 'node:child_process';
 
@@ -15,6 +15,8 @@ const KEY = (process.env.BARK_KEY || '').trim();
 // Las dos fichas de la PS5 Disc que vigilaba tambien el vigilante de la PC.
 const ASINS = (process.env.ASINS || process.env.ASIN || 'B0FRGTYSL5,B0CL61F39H')
   .split(',').map(s => s.trim()).filter(Boolean);
+// Codigo postal de entrega: la direccion de Eduardo esta en Miami (33166 = Doral, zona de couriers).
+const ZIP = (process.env.ZIP || '33166').trim();
 const INTERVALO_S = Number(process.env.INTERVALO_S || 120);
 const DURACION_S = Number(process.env.DURACION_S || 6600);
 const CHROMIUM = process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium';
@@ -60,11 +62,39 @@ async function abrirFicha(page, url) {
   return !!(await page.$('#productTitle'));
 }
 
+// Amazon muestra disponibilidad segun la direccion de entrega: se fija la de Miami
+// con el selector de ubicacion de la propia pagina (queda guardada en la sesion del navegador).
+// Si se pulsa "Apply" antes de que el selector termine de cargar, Amazon no guarda nada:
+// por eso se espera la respuesta de address-change y se verifica recargando la ficha.
+async function ponerZip(page, zip) {
+  const leerUbicacion = () => page.evaluate(() => document.querySelector('#glow-ingress-line2')?.innerText || '');
+  for (let intento = 1; intento <= 3; intento++) {
+    try {
+      await abrirFicha(page, urlOferta(ASINS[0]));
+      if ((await leerUbicacion()).includes(zip)) return true;
+      await page.click('#nav-global-location-popover-link', { timeout: 10000 });
+      await page.waitForSelector('#GLUXZipUpdateInput', { state: 'visible', timeout: 10000 });
+      await page.waitForTimeout(1000);
+      await page.fill('#GLUXZipUpdateInput', zip);
+      await Promise.all([
+        page.waitForResponse(r => r.url().includes('/glow/address-change'), { timeout: 10000 }),
+        page.click('#GLUXZipUpdate input, #GLUXZipUpdate', { timeout: 5000 }),
+      ]);
+      await page.waitForTimeout(1500);
+      await abrirFicha(page, urlOferta(ASINS[0]));
+      if ((await leerUbicacion()).includes(zip)) return true;
+    } catch (e) { log(`intento ${intento} de poner el codigo postal ${zip} fallo:`, e.message.split('\n')[0]); }
+  }
+  return false;
+}
+
 async function revisar(page, asin) {
   const fichaOk = await abrirFicha(page, urlOferta(asin));
   const ficha = await page.evaluate(() => ({
     titulo: (document.querySelector('#productTitle')?.innerText || '').replace(/\s+/g, ' ').trim(),
     comprar: !!document.querySelector('#add-to-cart-button, #buy-now-button'),
+    ubicacion: (document.querySelector('#glow-ingress-line2')?.innerText || '')
+      .replace(/[\s‌]+/g, ' ').trim(),
   }));
 
   let lista = null;
@@ -80,7 +110,7 @@ async function revisar(page, asin) {
   const amazonEnLista = !!lista?.some(o => /^new/i.test(o.condicion) && /amazon\.com/i.test(o.vende));
   const comprar = fichaOk && ficha.comprar;
   return {
-    titulo: ficha.titulo, fichaOk, comprar, lista, amazonEnLista,
+    titulo: ficha.titulo, ubicacion: ficha.ubicacion, fichaOk, comprar, lista, amazonEnLista,
     bloqueado: !fichaOk && !lista, // no se pudo leer ninguna de las dos
     disponible: comprar || amazonEnLista,
   };
@@ -101,6 +131,10 @@ async function main() {
     locale: 'en-US', viewport: { width: 1366, height: 900 }, ignoreHTTPSErrors: true,
   });
   const page = await ctx.newPage();
+  if (ZIP) {
+    log(await ponerZip(page, ZIP) ? `Entrega configurada al codigo postal ${ZIP}`
+      : `No pude configurar la entrega a ${ZIP}; reviso con la ubicacion por defecto y reintento luego`);
+  }
   const fin = Date.now() + DURACION_S * 1000;
   const hubo = Object.fromEntries(ASINS.map(a => [a, 0]));
   let bloqueosSeguidos = 0, avisoBloqueo = false;
@@ -120,7 +154,13 @@ async function main() {
           }
           bloqueosSeguidos = 0; avisoBloqueo = false;
           const detalle = `caja de compra: ${r.fichaOk ? (r.comprar ? 'SI' : 'no') : 'no cargo'}, lista: ${
-            r.lista ? `${r.amazonEnLista ? 'SI' : 'no'} (${r.lista.length} ofertas)` : 'no cargo'}`;
+            r.lista ? `${r.amazonEnLista ? 'SI' : 'no'} (${r.lista.length} ofertas)` : 'no cargo'}, entrega: ${
+            r.ubicacion || '?'}`;
+          // Si Amazon olvido la direccion de Miami, se vuelve a poner para la siguiente revision.
+          if (ZIP && r.fichaOk && !r.ubicacion.includes(ZIP)) {
+            log(`${asin}: la entrega no esta en ${ZIP} ("${r.ubicacion}"), la vuelvo a poner`);
+            await ponerZip(page, ZIP);
+          }
           if (r.disponible) {
             hubo[asin]++;
             log(`${asin} DISPONIBLE: ${nombre} | ${detalle}`);
