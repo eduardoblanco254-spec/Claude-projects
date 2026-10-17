@@ -1,4 +1,9 @@
-// Vigilante de la PS5 Disc en Amazon.com (solo oferta vendida por Amazon) -> avisos por Bark.
+// Vigilante de PS5 en Amazon -> avisos por Bark.
+//
+// Dos modos:
+//   MODO=amazon (por defecto): avisa mientras Amazon.com venda la consola nueva (fichas Disc).
+//   MODO=nuevas: avisa UNA vez por cada oferta nueva (de Amazon.com o de cualquier vendedor) que
+//                aparezca en la lista de ofertas; no repite mientras siga la misma oferta.
 //
 // Uso (la clave de Bark va SIEMPRE por variable de entorno, nunca en el repo):
 //   BARK_KEY=xxxxxxxx node watch.mjs            # bucle: revisa cada INTERVALO_S segundos
@@ -6,12 +11,16 @@
 //   BARK_KEY=xxxxxxxx node watch.mjs --test     # manda una notificacion normal de prueba
 //   node watch.mjs --once --dry                 # revisa sin mandar ningun aviso
 //
-// Variables opcionales: ASINS (lista separada por comas), ZIP (33166), INTERVALO_S (120),
-// DURACION_S (6600), CHROMIUM_PATH, HTTPS_PROXY.
+// Variables opcionales: MODO, ASINS (lista separada por comas), ZIP (33166), INTERVALO_S (120),
+// DURACION_S (6600), ESTADO_PATH (MODO=nuevas), CHROMIUM_PATH, HTTPS_PROXY.
 import { chromium } from 'playwright-core';
 import { execFileSync } from 'node:child_process';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const KEY = (process.env.BARK_KEY || '').trim();
+const MODO = (process.env.MODO || 'amazon').trim();
 // Las dos fichas de la PS5 Disc que vigilaba tambien el vigilante de la PC.
 const ASINS = (process.env.ASINS || process.env.ASIN || 'B0FRGTYSL5,B0CL61F39H')
   .split(',').map(s => s.trim()).filter(Boolean);
@@ -20,7 +29,10 @@ const ZIP = (process.env.ZIP || '33166').trim();
 const INTERVALO_S = Number(process.env.INTERVALO_S || 120);
 const DURACION_S = Number(process.env.DURACION_S || 6600);
 const CHROMIUM = process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium';
+// Ofertas nuevas ya avisadas (MODO=nuevas), para no repetir el aviso al relanzar el vigilante.
+const ESTADO = process.env.ESTADO_PATH || join(dirname(fileURLToPath(import.meta.url)), 'estado-nuevas.json');
 const urlOferta = asin => `https://www.amazon.com/dp/${asin}?m=ATVPDKIKX0DER`; // m=... = solo Amazon.com
+const urlOfertas = asin => `https://www.amazon.com/dp/${asin}?aod=1`;
 const args = new Set(process.argv.slice(2));
 const SIN_AVISOS = args.has('--dry');
 
@@ -28,7 +40,7 @@ const hora = () => new Date().toISOString().replace('T', ' ').slice(0, 19) + 'Z'
 const log = (...a) => console.log(`[${hora()}]`, ...a);
 
 function bark(titulo, cuerpo, { urgente = false, url = urlOferta(ASINS[0]) } = {}) {
-  if (SIN_AVISOS) { log(`(modo --dry, no se manda) ${titulo}`); return true; }
+  if (SIN_AVISOS) { log(`(modo --dry, no se manda) ${titulo} | ${cuerpo}`); return true; }
   if (!KEY) { log('Falta BARK_KEY: no se puede avisar'); return false; }
   const q = new URLSearchParams({ group: 'PS5', url, ...(urgente
     ? { level: 'critical', volume: '10', call: '1', sound: 'alarm' }
@@ -42,10 +54,12 @@ function bark(titulo, cuerpo, { urgente = false, url = urlOferta(ASINS[0]) } = {
   } catch (e) { log('Bark error:', e.message.split('\n')[0]); return false; }
 }
 
-// Dos formas independientes de ver si Amazon.com vende la consola nueva:
-//  1) la ficha filtrada a Amazon.com tiene boton de comprar;
-//  2) la lista completa de ofertas ("See All Buying Options") trae una oferta New vendida por Amazon.com.
-// La 2 cubre el caso en que la oferta de Amazon esta en la lista pero no en la caja de compra.
+const leerEstado = () => { try { return JSON.parse(readFileSync(ESTADO, 'utf8')); } catch { return {}; } };
+function guardarEstado(estado) {
+  try { writeFileSync(ESTADO, JSON.stringify(estado, null, 1)); }
+  catch (e) { log('no pude guardar el estado:', e.message); }
+}
+
 // A veces la ficha llega sin cargar (o con la pagina intermedia "Continue shopping"):
 // se reintenta una vez para no contar como "sin stock" una ficha que no se pudo leer.
 async function abrirFicha(page, url) {
@@ -88,6 +102,34 @@ async function ponerZip(page, zip) {
   return false;
 }
 
+// Lista completa de ofertas ("See All Buying Options"): condicion, vendedor y precio de cada una.
+// Devuelve null si la lista no cargo.
+async function leerOfertas(page, asin) {
+  try {
+    await page.goto(urlOfertas(asin), { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await page.waitForSelector('#aod-offer-list, #aod-pinned-offer', { timeout: 15000 });
+    await page.waitForTimeout(2000);
+    return await page.evaluate(() => ({
+      titulo: (document.querySelector('#productTitle')?.innerText || '').replace(/\s+/g, ' ').trim(),
+      ubicacion: (document.querySelector('#glow-ingress-line2')?.innerText || '').replace(/[\s‌]+/g, ' ').trim(),
+      ofertas: [...document.querySelectorAll('#aod-pinned-offer, #aod-offer')].map(el => {
+        const txt = s => (el.querySelector(s)?.innerText || '').replace(/\s+/g, ' ').trim();
+        const todo = (el.innerText || '').replace(/\s+/g, ' ');
+        return {
+          condicion: txt('#aod-offer-heading'),
+          vende: txt('#aod-offer-soldBy').replace(/^Sold by\s*/i, '').replace(/\s*Seller rating.*$/i, '').trim(),
+          precio: /see price in cart|add to cart to see/i.test(todo) ? 'precio en el carrito'
+            : ((todo.match(/\$\s?[\d,]+(?:\.\d{2})?/) || [''])[0] || 'precio no leido'),
+        };
+      }).filter(o => o.condicion || o.vende),
+    }));
+  } catch { return null; }
+}
+
+// MODO=amazon. Dos formas independientes de ver si Amazon.com vende la consola nueva:
+//  1) la ficha filtrada a Amazon.com tiene boton de comprar;
+//  2) la lista completa de ofertas trae una oferta New vendida por Amazon.com.
+// La 2 cubre el caso en que la oferta de Amazon esta en la lista pero no en la caja de compra.
 async function revisar(page, asin) {
   const fichaOk = await abrirFicha(page, urlOferta(asin));
   const ficha = await page.evaluate(() => ({
@@ -96,17 +138,7 @@ async function revisar(page, asin) {
     ubicacion: (document.querySelector('#glow-ingress-line2')?.innerText || '')
       .replace(/[\s‌]+/g, ' ').trim(),
   }));
-
-  let lista = null;
-  try {
-    await page.goto(`https://www.amazon.com/dp/${asin}?aod=1`, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await page.waitForSelector('#aod-offer-list, #aod-pinned-offer', { timeout: 15000 });
-    await page.waitForTimeout(2000);
-    lista = await page.evaluate(() => [...document.querySelectorAll('#aod-pinned-offer, #aod-offer')].map(el => {
-      const txt = s => (el.querySelector(s)?.innerText || '').replace(/\s+/g, ' ').trim();
-      return { condicion: txt('#aod-offer-heading'), vende: txt('#aod-offer-soldBy') };
-    }));
-  } catch { /* si la lista no carga, queda la revision de la ficha */ }
+  const lista = (await leerOfertas(page, asin))?.ofertas || null;
   const amazonEnLista = !!lista?.some(o => /^new/i.test(o.condicion) && /amazon\.com/i.test(o.vende));
   const comprar = fichaOk && ficha.comprar;
   return {
@@ -135,23 +167,54 @@ async function main() {
     log(await ponerZip(page, ZIP) ? `Entrega configurada al codigo postal ${ZIP}`
       : `No pude configurar la entrega a ${ZIP}; reviso con la ubicacion por defecto y reintento luego`);
   }
+  log(`Modo ${MODO}: ${ASINS.join(', ')}`);
   const fin = Date.now() + DURACION_S * 1000;
   const hubo = Object.fromEntries(ASINS.map(a => [a, 0]));
+  const estado = MODO === 'nuevas' ? leerEstado() : {};
   let bloqueosSeguidos = 0, avisoBloqueo = false;
+  const fallaLectura = asin => {
+    bloqueosSeguidos++;
+    log(`${asin}: no pude leer la pagina de Amazon (${bloqueosSeguidos} seguidas)`);
+    if (bloqueosSeguidos >= 5 && !avisoBloqueo) {
+      avisoBloqueo = bark('Vigilante PS5: Amazon me bloquea', 'No puedo revisar el stock. Revisa la sesion.');
+    }
+  };
   try {
     do {
       for (const asin of ASINS) {
         try {
-          const r = await revisar(page, asin);
-          const nombre = r.titulo || asin;
-          if (r.bloqueado) {
-            bloqueosSeguidos++;
-            log(`${asin}: Amazon bloqueo la consulta (${bloqueosSeguidos} seguidas)`);
-            if (bloqueosSeguidos >= 5 && !avisoBloqueo) {
-              avisoBloqueo = bark('Vigilante PS5: Amazon me bloquea', 'No puedo revisar el stock. Revisa la sesion.');
+          if (MODO === 'nuevas') {
+            const r = await leerOfertas(page, asin);
+            if (!r) { fallaLectura(asin); continue; }
+            bloqueosSeguidos = 0; avisoBloqueo = false;
+            const nombre = r.titulo || asin;
+            if (ZIP && r.ubicacion && !r.ubicacion.includes(ZIP)) {
+              log(`${asin}: la entrega no esta en ${ZIP} ("${r.ubicacion}"), la vuelvo a poner`);
+              await ponerZip(page, ZIP);
             }
+            const nuevas = r.ofertas.filter(o => /^new/i.test(o.condicion));
+            const clave = o => `${o.vende} | ${o.precio}`;
+            const yaAvisadas = new Set(estado[asin] || []);
+            const vigentes = [];
+            for (const o of nuevas) {
+              if (yaAvisadas.has(clave(o))) { vigentes.push(clave(o)); continue; }
+              const deAmazon = /^amazon\.com$/i.test(o.vende);
+              const ok = bark(deAmazon ? 'PS5 NUEVA de Amazon.com!' : 'PS5 nueva de otro vendedor',
+                `${nombre}: ${o.vende}, ${o.precio}`,
+                { urgente: deAmazon, url: deAmazon ? urlOferta(asin) : urlOfertas(asin) });
+              if (ok) vigentes.push(clave(o)); // si el aviso fallo, se reintenta en la proxima revision
+            }
+            // Las ofertas que desaparecen se olvidan: si vuelven mas tarde, se avisa otra vez.
+            estado[asin] = vigentes;
+            if (!SIN_AVISOS || process.env.ESTADO_PATH) guardarEstado(estado); // --dry no toca el estado real
+            log(`${asin} ${nuevas.length ? `${nuevas.length} oferta(s) nueva(s): ${nuevas.map(clave).join('; ')}`
+              : 'sin ofertas nuevas'} | ${r.ofertas.length} ofertas en total | entrega: ${r.ubicacion || '?'}`);
             continue;
           }
+
+          const r = await revisar(page, asin);
+          const nombre = r.titulo || asin;
+          if (r.bloqueado) { fallaLectura(asin); continue; }
           bloqueosSeguidos = 0; avisoBloqueo = false;
           const detalle = `caja de compra: ${r.fichaOk ? (r.comprar ? 'SI' : 'no') : 'no cargo'}, lista: ${
             r.lista ? `${r.amazonEnLista ? 'SI' : 'no'} (${r.lista.length} ofertas)` : 'no cargo'}, entrega: ${

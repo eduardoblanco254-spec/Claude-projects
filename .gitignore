@@ -149,3 +149,6 @@ juego/musica_prueba/
 
 # Claude Code local settings (contiene la clave de Bark)
 .claude/settings.local.json
+
+# Estado del vigilante de PS5 (ofertas ya avisadas)
+ps5-alerta-nube/estado-*.json
