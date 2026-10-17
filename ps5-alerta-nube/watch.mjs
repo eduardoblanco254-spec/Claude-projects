@@ -12,10 +12,12 @@
 //   node watch.mjs --once --dry                 # revisa sin mandar ningun aviso
 //
 // Variables opcionales: MODO, ASINS (lista separada por comas), ZIP (33166), INTERVALO_S (120),
-// DURACION_S (6600), ESTADO_PATH (MODO=nuevas), CHROMIUM_PATH, HTTPS_PROXY.
+// DURACION_S (6600; 0 = sin limite, hasta cerrar la ventana), ESTADO_PATH (MODO=nuevas),
+// CHROMIUM_PATH, HTTPS_PROXY.
+// En Windows o Mac no hace falta CHROMIUM_PATH: usa el Google Chrome o el Edge instalados.
 import { chromium } from 'playwright-core';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -52,6 +54,17 @@ function bark(titulo, cuerpo, { urgente = false, url = urlOferta(ASINS[0]) } = {
     log(`Bark ${ok ? 'OK' : 'FALLO'}: ${titulo}`);
     return ok;
   } catch (e) { log('Bark error:', e.message.split('\n')[0]); return false; }
+}
+
+// En la nube se usa el Chromium de /opt/pw-browsers; en una PC, el Chrome o el Edge instalados.
+async function abrirNavegador() {
+  const base = { headless: true, args: ['--no-sandbox', '--ignore-certificate-errors'] };
+  if (process.env.HTTPS_PROXY) base.proxy = { server: process.env.HTTPS_PROXY };
+  if (existsSync(CHROMIUM)) return chromium.launch({ ...base, executablePath: CHROMIUM });
+  for (const channel of ['chrome', 'msedge']) {
+    try { return await chromium.launch({ ...base, channel }); } catch { /* probar el siguiente */ }
+  }
+  throw new Error('No encontre Google Chrome ni Microsoft Edge. Instala Chrome o pon CHROMIUM_PATH.');
 }
 
 const leerEstado = () => { try { return JSON.parse(readFileSync(ESTADO, 'utf8')); } catch { return {}; } };
@@ -152,12 +165,7 @@ async function main() {
   if (args.has('--test')) {
     process.exit(bark('Prueba: vigilante PS5 en la nube', 'Si ves esto, Bark funciona. Te aviso cuando haya PS5.') ? 0 : 1);
   }
-  const launchOpts = {
-    executablePath: CHROMIUM, headless: true,
-    args: ['--no-sandbox', '--ignore-certificate-errors'],
-  };
-  if (process.env.HTTPS_PROXY) launchOpts.proxy = { server: process.env.HTTPS_PROXY };
-  const browser = await chromium.launch(launchOpts);
+  const browser = await abrirNavegador();
   const ctx = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     locale: 'en-US', viewport: { width: 1366, height: 900 }, ignoreHTTPSErrors: true,
@@ -168,7 +176,7 @@ async function main() {
       : `No pude configurar la entrega a ${ZIP}; reviso con la ubicacion por defecto y reintento luego`);
   }
   log(`Modo ${MODO}: ${ASINS.join(', ')}`);
-  const fin = Date.now() + DURACION_S * 1000;
+  const fin = DURACION_S > 0 ? Date.now() + DURACION_S * 1000 : Infinity;
   const hubo = Object.fromEntries(ASINS.map(a => [a, 0]));
   const estado = MODO === 'nuevas' ? leerEstado() : {};
   let bloqueosSeguidos = 0, avisoBloqueo = false;
