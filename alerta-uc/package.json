@@ -1,0 +1,14 @@
+{
+  "name": "alerta-uc",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Avisa por Bark cuando el portal Socrates (FACES-UC) habilita la inscripcion o los ajustes de horario.",
+  "type": "module",
+  "scripts": {
+    "vigilar": "node vigilante.mjs",
+    "una-vez": "node vigilante.mjs --once --dry"
+  },
+  "dependencies": {
+    "playwright-core": "1.56.1"
+  }
+}
