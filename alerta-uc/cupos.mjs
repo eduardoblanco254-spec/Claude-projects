@@ -22,6 +22,8 @@ const DURACION_S = Number(process.env.DURACION_S || 0);
 const CHROMIUM = process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium';
 const args = new Set(process.argv.slice(2));
 const SIN_AVISOS = args.has('--dry');
+// SEGUIR=1: no se detiene al avisar; vuelve a avisar cada vez que la seccion pase de 0 cupos a tener cupo.
+const SEGUIR = process.env.SEGUIR === '1';
 
 const hora = () => new Date().toISOString().replace('T', ' ').slice(0, 19) + 'Z';
 const log = (...a) => console.log(`[${hora()}]`, ...a);
@@ -106,7 +108,7 @@ async function main() {
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' });
   const page = await ctx.newPage();
   const fin = DURACION_S > 0 ? Date.now() + DURACION_S * 1000 : Infinity;
-  let fallas = 0, avisoFallas = false;
+  let fallas = 0, avisoFallas = false, avisado = false;
   log(`Vigilando ${MATERIA} seccion ${SECCION}`);
   try {
     do {
@@ -121,11 +123,13 @@ async function main() {
       } else {
         fallas = 0; avisoFallas = false;
         log(`${MATERIA} seccion ${SECCION}: ${r.cupos} cupos | ${r.opciones}`);
-        if (r.cupos > 0) {
-          bark(`HAY CUPO: ${MATERIA} seccion ${SECCION}`, `${r.cupos} cupo(s). Entra ya a Ajuste de Horario.`, { urgente: true });
-          await capturarVistaPrevia(page);
-          if (!SIN_AVISOS) { log('Aviso enviado: cierro la sesion y me detengo.'); return; }
-        }
+        if (r.cupos > 0 && !avisado) {
+          avisado = bark(`HAY CUPO: ${MATERIA} seccion ${SECCION}`, `${r.cupos} cupo(s). Entra ya a Ajuste de Horario.`, { urgente: true });
+          if (!SEGUIR) {
+            await capturarVistaPrevia(page);
+            if (!SIN_AVISOS) { log('Aviso enviado: cierro la sesion y me detengo.'); return; }
+          }
+        } else if (r.cupos <= 0) avisado = false; // se lleno otra vez: el proximo cupo vuelve a avisar
       }
       if (args.has('--once')) break;
       await new Promise(res => setTimeout(res, INTERVALO_S * 1000));
