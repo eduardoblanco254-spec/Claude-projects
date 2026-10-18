@@ -82,6 +82,23 @@ async function leerCupos(page) {
   return { cupos: Number(m[1]), opciones: fila.opciones.join(' / ') };
 }
 
+// Elige la seccion en el selector solo para ver la vista previa del horario: el selector llama a
+// cambioSeccion(), que reenvia el formulario a ajustar_horario (vista previa). Lo que guarda es
+// "Finalizar" (cambio_seccion), que NUNCA se pulsa.
+async function capturarVistaPrevia(page) {
+  const destino = process.env.CAPTURA || new URL('./horario-con-cupo.png', import.meta.url).pathname;
+  try {
+    const sel = page.locator(`tr:has-text("${MATERIA}") select`);
+    const valor = await sel.evaluate((s, sec) => [...s.options].find(o => new RegExp(`^${sec}\\b`).test(o.textContent.trim()))?.value, SECCION);
+    if (valor) {
+      await Promise.all([page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 60000 }), sel.selectOption(valor)]);
+      await page.waitForTimeout(1500);
+    }
+    await page.screenshot({ path: destino, fullPage: true });
+    log(`Captura de la vista previa: ${destino}`);
+  } catch (e) { log('no pude tomar la captura:', e.message.split('\n')[0]); }
+}
+
 async function main() {
   if (!USUARIO || !CLAVE) { log('Faltan UC_USUARIO y UC_CLAVE'); process.exit(1); }
   const browser = await abrirNavegador();
@@ -106,6 +123,7 @@ async function main() {
         log(`${MATERIA} seccion ${SECCION}: ${r.cupos} cupos | ${r.opciones}`);
         if (r.cupos > 0) {
           bark(`HAY CUPO: ${MATERIA} seccion ${SECCION}`, `${r.cupos} cupo(s). Entra ya a Ajuste de Horario.`, { urgente: true });
+          await capturarVistaPrevia(page);
           if (!SIN_AVISOS) { log('Aviso enviado: cierro la sesion y me detengo.'); return; }
         }
       }

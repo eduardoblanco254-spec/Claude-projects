@@ -152,3 +152,4 @@ juego/musica_prueba/
 
 # Estado del vigilante de PS5 (ofertas ya avisadas)
 ps5-alerta-nube/estado-*.json
+alerta-uc/*.png
